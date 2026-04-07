@@ -1,0 +1,33 @@
+# Pellets — Invoice only (pakkumine = offer, skipped automatically)
+vendor_category: pellets
+system_prompt: >
+  Precise extractor for pellet fuel invoices (arve).
+  Return ONLY valid JSON — no prose, no markdown fences.
+required_fields:
+  - invoice_date
+  - total_incl_vat
+  - total_tonnes
+extraction_hints: >
+  CRITICAL field mapping for Warmeston pellet invoices:
+    total_incl_vat = value labeled "Kokku" — grand total INCLUDING VAT. Use this value.
+    total_excl_vat = value labeled "Maksudeta summa" — DO NOT use as total_incl_vat.
+    vat_amount = value labeled "KM 24%" or "KM 22%".
+  CRITICAL: Estonian dates are formatted DD.MM.YYYY. Do NOT confuse date parts with amounts.
+  VAT rates: before 2024-01-01 = 20%, 2024-01-01 to 2025-06-30 = 22%, from 2025-07-01 = 24%.
+  total_tonnes = quantity in tonnes from the invoice line item.
+  price_per_tonne_excl_vat = unit price excl VAT per tonne.
+  price_per_15kg_excl_vat = (price_per_tonne_excl_vat / 1000) * 15.
+  CROSS-CHECK: total_excl_vat * (1 + vat_rate) = total_incl_vat.
+json_schema:
+  invoice_number: "string or null"
+  invoice_date: "YYYY-MM-DD"
+  due_date: "YYYY-MM-DD or null"
+  total_tonnes: "number"
+  price_per_tonne_excl_vat: "number or null"
+  price_per_tonne_incl_vat: "number or null"
+  price_per_15kg_excl_vat: "number or null"
+  price_per_15kg_incl_vat: "number or null"
+  total_excl_vat: "number"
+  vat_amount: "number"
+  total_incl_vat: "number"
+  currency: "EUR"

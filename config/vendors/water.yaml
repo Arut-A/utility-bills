@@ -1,0 +1,31 @@
+# Viimsi Vesi — Water and Drainage
+vendor_category: water
+company: Viimsi Vesi
+system_prompt: >
+  Precise extractor for Viimsi Vesi water bills. ONLY current period.
+  IGNORE viivised, debts, balances. Return ONLY valid JSON.
+required_fields:
+  - invoice_date
+  - total_incl_vat
+  - water_consumption_m3
+extraction_hints: >
+  Extract m3, price/m3 water excl/incl VAT, price/m3 drainage excl/incl VAT,
+  water_cost_excl_vat, drainage_cost_excl_vat, totals excl/incl VAT. VAT 22%.
+  CROSS-CHECK: water_cost_excl_vat + drainage_cost_excl_vat approx total_excl_vat.
+json_schema:
+  invoice_number: "string or null"
+  invoice_date: "YYYY-MM-DD"
+  billing_period_start: "YYYY-MM-DD or null"
+  billing_period_end: "YYYY-MM-DD or null"
+  due_date: "YYYY-MM-DD or null"
+  water_consumption_m3: "number"
+  price_per_m3_water_excl_vat: "number or null"
+  price_per_m3_water_incl_vat: "number or null"
+  price_per_m3_drainage_excl_vat: "number or null"
+  price_per_m3_drainage_incl_vat: "number or null"
+  water_cost_excl_vat: "number or null"
+  drainage_cost_excl_vat: "number or null"
+  total_excl_vat: "number"
+  vat_amount: "number"
+  total_incl_vat: "number"
+  currency: "EUR"

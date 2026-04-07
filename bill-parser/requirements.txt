@@ -1,0 +1,10 @@
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.7.0
+pymupdf>=1.24.0          # fitz — PDF text extraction
+SQLAlchemy>=2.0.0
+pymysql>=1.1.0
+pyyaml>=6.0.1
+python-multipart>=0.0.9
+python-dateutil>=2.9.0
+httpx>=0.27.0             # Telegram notifications + health checks

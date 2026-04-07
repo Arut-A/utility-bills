@@ -1,0 +1,52 @@
+# Alexela — Electricity (Elekter)
+vendor_category: electricity
+company: Alexela
+system_prompt: >
+  You are a precise Estonian utility bill data extractor for Alexela electricity bills.
+  Extract ONLY data for the CURRENT billing period.
+  IGNORE completely: viivised (late fees), eelmise kuu võlg (previous month debt),
+  tasutud (paid amounts), any outstanding balances or arrears.
+  In Alexela bills the grand total is labeled "KOKKU EUR" — always use this as total_incl_vat.
+  "Summa KM-ta" rows show excl-VAT amounts per service line — do NOT use these as the total.
+  Return ONLY a valid JSON object — no prose, no markdown fences.
+required_fields:
+  - invoice_date
+  - total_incl_vat
+  - total_consumption_kwh
+extraction_hints: >
+  CRITICAL field mapping for Alexela electricity invoices:
+    total_incl_vat = value labeled "KOKKU EUR" — this is the grand total INCLUDING VAT.
+    total_excl_vat = value labeled "Maksustatav käive (24%)" — subtotal excl VAT (services only).
+    vat_amount = value labeled "Käibemaks 24%" or "Käibemaks 22%".
+    Do NOT use: "Summa KM-ta" rows (individual service lines excl VAT).
+    Do NOT use: "Tasumisele kuulub" if it differs from KOKKU EUR (may include prior debt).
+  CRITICAL: Estonian dates are formatted DD.MM.YYYY (e.g. "Maksetähtaeg 14.03.2026").
+  Do NOT confuse a date component like "14.03" with a monetary amount.
+  VAT rates: before 2024-01-01 = 20%, 2024-01-01 to 2025-06-30 = 22%, from 2025-07-01 = 24%.
+  Find day tariff (päevane): consumption kWh and price excl/incl VAT.
+  Find night tariff (öine): consumption kWh and price excl/incl VAT.
+  Find monthly fixed payment (kuumakse / kuutasu) excl/incl VAT.
+  Find balancing capacity cost (tarbimise tasakaalustamisvõimsuse kulu) excl/incl VAT.
+  total_consumption_kwh = Tarbimine field in kWh (e.g. "Tarbimine: 490,107 kWh").
+  CROSS-CHECK: total_incl_vat = total_excl_vat + vat_amount (may differ by viivised).
+json_schema:
+  invoice_number: "string or null"
+  invoice_date: "YYYY-MM-DD"
+  billing_period_start: "YYYY-MM-DD or null"
+  billing_period_end: "YYYY-MM-DD or null"
+  due_date: "YYYY-MM-DD or null"
+  day_consumption_kwh: "number or null"
+  day_price_excl_vat: "number or null"
+  day_price_incl_vat: "number or null"
+  night_consumption_kwh: "number or null"
+  night_price_excl_vat: "number or null"
+  night_price_incl_vat: "number or null"
+  total_consumption_kwh: "number — from Tarbimine field in kWh"
+  monthly_payment_excl_vat: "number or null"
+  monthly_payment_incl_vat: "number or null"
+  balance_power_cost_excl_vat: "number or null"
+  balance_power_cost_incl_vat: "number or null"
+  total_excl_vat: "number — Maksustatav käive value"
+  vat_amount: "number — Käibemaks 24% value"
+  total_incl_vat: "number — KOKKU EUR value, grand total including VAT"
+  currency: "EUR"

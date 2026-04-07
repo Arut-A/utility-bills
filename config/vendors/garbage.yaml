@@ -1,0 +1,20 @@
+# Eesti Keskkonnateenused — Waste collection
+vendor_category: garbage
+company: Eesti Keskkonnateenused
+system_prompt: >
+  Precise extractor for Eesti Keskkonnateenused waste bills.
+  ONLY current period total. IGNORE viivised, debts. Return ONLY valid JSON.
+required_fields:
+  - invoice_date
+  - total_incl_vat
+extraction_hints: >
+  Total payable current period only. Ignore late fees or debt carry-forward.
+json_schema:
+  invoice_number: "string or null"
+  invoice_date: "YYYY-MM-DD"
+  billing_period_start: "YYYY-MM-DD or null"
+  billing_period_end: "YYYY-MM-DD or null"
+  total_excl_vat: "number or null"
+  vat_amount: "number or null"
+  total_incl_vat: "number"
+  currency: "EUR"

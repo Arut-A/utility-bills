@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Home Utility Bills Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#0f1117; --surface:#1a1d27; --border:#2a2d3a; --text:#e2e8f0; --muted:#64748b; --up:#ef4444; --down:#22c55e; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif; padding:24px; }
+  h1 { font-size:1.6rem; font-weight:700; margin-bottom:4px; }
+  .subtitle { color:var(--muted); font-size:0.85rem; margin-bottom:24px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:12px; margin-bottom:28px; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
+  .card-label { font-size:0.72rem; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin-bottom:6px; }
+  .card-value { font-size:1.4rem; font-weight:700; }
+  .card-sub { font-size:0.75rem; color:var(--muted); margin-top:2px; }
+  .filters { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:20px; }
+  .chip { padding:5px 14px; border-radius:20px; font-size:0.78rem; cursor:pointer; border:1.5px solid transparent; transition:all .15s; user-select:none; display:flex; align-items:center; gap:6px; }
+  .chip.active { color:#fff; }
+  .chip:not(.active) { background:var(--surface); border-color:var(--border); color:var(--muted); }
+  .chart-wrap { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:20px; margin-bottom:28px; }
+  .chart-scroll { overflow-x:auto; }
+  .chart-inner { height:350px; }
+  .chart-title { font-size:0.9rem; font-weight:600; margin-bottom:16px; color:var(--muted); }
+  .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-bottom:28px; }
+  @media (max-width:900px) { .grid-2 { grid-template-columns:1fr; } }
+  .table-wrap { background:var(--surface); border:1px solid var(--border); border-radius:12px; overflow:hidden; margin-bottom:28px; max-height:600px; overflow-y:auto; }
+  table { width:100%; border-collapse:collapse; font-size:0.83rem; }
+  thead tr { background:#0f1117; position:sticky; top:0; z-index:1; }
+  th { padding:10px 14px; text-align:left; color:var(--muted); font-weight:500; font-size:0.75rem; text-transform:uppercase; letter-spacing:.05em; }
+  td { padding:9px 14px; border-top:1px solid var(--border); }
+  tr:hover td { background:rgba(255,255,255,.03); }
+  .amount { text-align:right; font-variant-numeric:tabular-nums; font-weight:600; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; }
+  .change-up { color:var(--up); }
+  .change-down { color:var(--down); }
+  .section-title { font-size:1.1rem; font-weight:600; margin:32px 0 16px 0; color:var(--text); border-bottom:1px solid var(--border); padding-bottom:8px; }
+  .sticky-filters { position:sticky; top:0; z-index:10; background:var(--bg); padding:12px 0 4px 0; margin:0 -24px; padding-left:24px; padding-right:24px; border-bottom:1px solid var(--border); margin-bottom:20px; }
+  .filter-label { font-size:0.68rem; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin-bottom:4px; }
+</style>
+</head>
+<body>
+<h1>Home Utility Bills</h1>
+<p class="subtitle">Parsed from Gmail — all amounts include VAT — auto-generated</p>
+<div class="sticky-filters">
+  <div class="filter-label">Years</div>
+  <div class="filters" id="yearFilters" style="margin-bottom:4px"></div>
+  <div class="filter-label">Months</div>
+  <div class="filters" id="monthFilters" style="margin-bottom:4px"></div>
+  <div class="filter-label">Categories</div>
+  <div class="filters" id="filters" style="margin-bottom:4px"></div>
+</div>
+<div class="cards" id="summaryCards"></div>
+<div class="chart-wrap">
+  <div class="chart-title">Monthly Cost by Category (EUR incl. VAT)</div>
+  <div class="chart-scroll" id="costScroll"><div class="chart-inner" id="costInner"><canvas id="chart"></canvas></div></div>
+</div>
+<div class="chart-wrap">
+  <div class="chart-title">Unit Cost: Electricity, Gas, Water & Pellets</div>
+  <div class="chart-scroll" id="unitScroll"><div class="chart-inner" id="unitInner"><canvas id="unitCostChart"></canvas></div></div>
+</div>
+
+<div class="grid-2">
+  <div class="chart-wrap">
+    <div class="chart-title">Spending by Category</div>
+    <div style="height:300px"><canvas id="pieChart"></canvas></div>
+  </div>
+  <div class="chart-wrap">
+    <div class="chart-title">Year-over-Year Comparison</div>
+    <div class="table-wrap" style="background:transparent;border:none;max-height:300px;">
+      <table><thead><tr><th>Year</th><th class="amount">Total (EUR)</th><th class="amount">Change</th><th class="amount">Monthly Avg</th></tr></thead>
+      <tbody id="yoyBody"></tbody></table>
+    </div>
+  </div>
+</div>
+
+<div class="chart-wrap">
+  <div class="chart-title">Month-over-Month Comparison (same month across years, stacked by category)</div>
+  <div class="chart-scroll"><div class="chart-inner" id="momInner"><canvas id="momChart"></canvas></div></div>
+</div>
+
+<div class="section-title">Category Breakdown</div>
+<div class="cards" id="categoryCards"></div>
+
+<div class="chart-wrap">
+  <div class="chart-title">Consumption Trends (Usage, not Cost)</div>
+  <div class="chart-scroll"><div class="chart-inner"><canvas id="consumptionChart"></canvas></div></div>
+</div>
+
+<div class="chart-wrap">
+  <div class="chart-title">Budget Forecast (3-Month Projection)</div>
+  <div class="chart-scroll"><div style="height:350px"><canvas id="forecastChart"></canvas></div></div>
+</div>
+
+<div class="chart-wrap">
+  <div class="chart-title">Bill Details</div>
+  <div class="table-wrap" style="background:transparent;border:none;border-radius:0;">
+    <table><thead><tr><th>Category</th><th>Month</th><th class="amount">Amount (EUR)</th></tr></thead>
+    <tbody id="tableBody"></tbody></table>
+  </div>
+</div>
+<script>
+const RAW = {"vendors": ["electricity", "electricity_network", "garbage", "gas", "gas_network", "home_security", "house_insurance", "internet", "pellets", "phone", "water"], "months": ["2024-01", "2024-02", "2024-03", "2024-04", "2024-05", "2024-06", "2024-07", "2024-08", "2024-09", "2024-10", "2024-11", "2024-12", "2025-01", "2025-02", "2025-03", "2025-04", "2025-05", "2025-06", "2025-07", "2025-08", "2025-09", "2025-10", "2025-11", "2025-12"], "data": {"electricity": {"2024-01": 38.23, "2024-02": 34.56, "2024-03": 36.05, "2024-04": 28.38, "2024-05": 22.83, "2024-06": 22.62, "2024-07": 23.38, "2024-08": 20.55, "2024-09": 21.73, "2024-10": 27.47, "2024-11": 35.72, "2024-12": 37.43, "2025-01": 34.57, "2025-02": 35.6, "2025-03": 38.3, "2025-04": 29.91, "2025-05": 21.02, "2025-06": 22.31, "2025-07": 23.09, "2025-08": 20.26, "2025-09": 23.08, "2025-10": 30.64, "2025-11": 36.44, "2025-12": 35.34}, "electricity_network": {"2024-01": 19.53, "2024-02": 17.72, "2024-03": 17.01, "2024-04": 15.06, "2024-05": 14.78, "2024-06": 14.23, "2024-07": 14.69, "2024-08": 14.51, "2024-09": 14.08, "2024-10": 17.32, "2024-11": 17.85, "2024-12": 18.35, "2025-01": 19.16, "2025-02": 18.55, "2025-03": 19.25, "2025-04": 16.3, "2025-05": 14.46, "2025-06": 12.98, "2025-07": 13.39, "2025-08": 13.53, "2025-09": 13.06, "2025-10": 15.41, "2025-11": 17.04, "2025-12": 17.55}, "gas": {"2024-01": 80.1, "2024-02": 76.7, "2024-03": 76.77, "2024-04": 50.73, "2024-05": 26.96, "2024-06": 29.96, "2024-07": 28.66, "2024-08": 28.49, "2024-09": 26.53, "2024-10": 55.15, "2024-11": 74.18, "2024-12": 76.89, "2025-01": 84.54, "2025-02": 80.16, "2025-03": 79.11, "2025-04": 54.77, "2025-05": 29.54, "2025-06": 29.24, "2025-07": 26.79, "2025-08": 25.9, "2025-09": 27.17, "2025-10": 51.22, "2025-11": 74.77, "2025-12": 83.96}, "gas_network": {"2024-01": 15.9, "2024-02": 14.56, "2024-03": 15.37, "2024-04": 12.29, "2024-05": 10.66, "2024-06": 9.93, "2024-07": 9.62, "2024-08": 9.59, "2024-09": 10.1, "2024-10": 12.03, "2024-11": 15.2, "2024-12": 15.95, "2025-01": 14.76, "2025-02": 14.33, "2025-03": 16.19, "2025-04": 12.52, "2025-05": 9.35, "2025-06": 9.28, "2025-07": 9.38, "2025-08": 10.2, "2025-09": 10.47, "2025-10": 12.34, "2025-11": 13.95, "2025-12": 14.72}, "water": {"2024-01": 19.43, "2024-02": 18.08, "2024-03": 19.36, "2024-04": 19.04, "2024-05": 16.59, "2024-06": 18.64, "2024-07": 18.52, "2024-08": 18.11, "2024-09": 17.33, "2024-10": 18.41, "2024-11": 16.88, "2024-12": 17.81, "2025-01": 17.87, "2025-02": 19.31, "2025-03": 19.08, "2025-04": 17.32, "2025-05": 18.0, "2025-06": 17.07, "2025-07": 19.19, "2025-08": 19.07, "2025-09": 17.42, "2025-10": 18.4, "2025-11": 18.31, "2025-12": 17.0}, "phone": {"2024-01": 22.23, "2024-02": 22.03, "2024-03": 22.25, "2024-04": 22.03, "2024-05": 21.56, "2024-06": 21.85, "2024-07": 21.58, "2024-08": 22.38, "2024-09": 22.33, "2024-10": 22.29, "2024-11": 21.83, "2024-12": 21.61, "2025-01": 22.33, "2025-02": 22.39, "2025-03": 21.64, "2025-04": 21.99, "2025-05": 21.62, "2025-06": 22.23, "2025-07": 22.23, "2025-08": 21.67, "2025-09": 21.98, "2025-10": 22.04, "2025-11": 21.79, "2025-12": 22.33}, "internet": {"2024-01": 30.95, "2024-02": 30.82, "2024-03": 31.02, "2024-04": 31.14, "2024-05": 30.81, "2024-06": 30.88, "2024-07": 31.31, "2024-08": 31.09, "2024-09": 30.96, "2024-10": 31.01, "2024-11": 30.77, "2024-12": 30.83, "2025-01": 30.9, "2025-02": 31.05, "2025-03": 30.83, "2025-04": 30.83, "2025-05": 30.73, "2025-06": 31.08, "2025-07": 30.83, "2025-08": 31.25, "2025-09": 31.22, "2025-10": 30.73, "2025-11": 30.84, "2025-12": 31.1}, "home_security": {"2024-01": 15.91, "2024-02": 15.88, "2024-03": 16.14, "2024-04": 16.02, "2024-05": 15.99, "2024-06": 16.09, "2024-07": 16.1, "2024-08": 15.9, "2024-09": 15.87, "2024-10": 15.98, "2024-11": 15.98, "2024-12": 15.99, "2025-01": 16.07, "2025-02": 16.06, "2025-03": 16.15, "2025-04": 15.87, "2025-05": 15.97, "2025-06": 15.95, "2025-07": 16.12, "2025-08": 15.92, "2025-09": 15.9, "2025-10": 15.98, "2025-11": 15.98, "2025-12": 15.93}, "garbage": {"2024-01": 13.79, "2024-02": 14.36, "2024-03": 13.95, "2024-04": 14.3, "2024-05": 14.04, "2024-06": 13.62, "2024-07": 14.42, "2024-08": 14.28, "2024-09": 14.39, "2024-10": 14.36, "2024-11": 14.29, "2024-12": 13.72, "2025-01": 13.99, "2025-02": 13.76, "2025-03": 13.92, "2025-04": 13.63, "2025-05": 13.9, "2025-06": 14.41, "2025-07": 13.8, "2025-08": 14.24, "2025-09": 13.96, "2025-10": 13.94, "2025-11": 14.38, "2025-12": 14.42}, "pellets": {"2024-01": 52.46, "2024-02": 53.82, "2024-03": 49.13, "2024-04": 50.31, "2024-09": 55.9, "2024-10": 52.66, "2024-11": 52.35, "2024-12": 54.06, "2025-01": 48.32, "2025-02": 52.7, "2025-03": 52.02, "2025-04": 54.93, "2025-09": 49.15, "2025-10": 55.83, "2025-11": 48.51, "2025-12": 49.39}, "house_insurance": {"2024-01": 26.05, "2024-02": 26.09, "2024-03": 25.86, "2024-04": 25.8, "2024-05": 26.2, "2024-06": 25.87, "2024-07": 26.05, "2024-08": 26.06, "2024-09": 25.96, "2024-10": 26.04, "2024-11": 26.01, "2024-12": 26.23, "2025-01": 25.85, "2025-02": 26.11, "2025-03": 25.86, "2025-04": 25.95, "2025-05": 26.09, "2025-06": 25.9, "2025-07": 25.9, "2025-08": 26.13, "2025-09": 25.78, "2025-10": 25.98, "2025-11": 26.26, "2025-12": 26.26}}};
+const CONSUMPTION = {"elec_kwh": {"2024-01": 230, "2024-02": 238, "2024-03": 240, "2024-04": 213, "2024-05": 151, "2024-06": 151, "2024-07": 136, "2024-08": 130, "2024-09": 149, "2024-10": 204, "2024-11": 258, "2024-12": 277, "2025-01": 260, "2025-02": 227, "2025-03": 268, "2025-04": 188, "2025-05": 145, "2025-06": 152, "2025-07": 130, "2025-08": 129, "2025-09": 129, "2025-10": 198, "2025-11": 241, "2025-12": 257}, "gas_m3": {"2024-01": 173.6, "2024-02": 153.3, "2024-03": 170.3, "2024-04": 103.8, "2024-09": 54.9, "2024-10": 120.7, "2024-11": 178.7, "2024-12": 148.9, "2025-01": 162.0, "2025-02": 156.2, "2025-03": 145.3, "2025-04": 117.2, "2025-09": 56.8, "2025-10": 103.7, "2025-11": 174.6, "2025-12": 167.1}, "gas_kwh": {"2024-01": 1831.5, "2024-02": 1617.3, "2024-03": 1796.7, "2024-04": 1095.1, "2024-09": 579.2, "2024-10": 1273.4, "2024-11": 1885.3, "2024-12": 1570.9, "2025-01": 1709.1, "2025-02": 1647.9, "2025-03": 1532.9, "2025-04": 1236.5, "2025-09": 599.2, "2025-10": 1094.0, "2025-11": 1842.0, "2025-12": 1762.9}, "water_m3": {"2024-01": 6.4, "2024-02": 5.5, "2024-03": 5.7, "2024-04": 7.2, "2024-05": 7.3, "2024-06": 6.6, "2024-07": 7.2, "2024-08": 6.7, "2024-09": 5.8, "2024-10": 5.8, "2024-11": 6.1, "2024-12": 7.3, "2025-01": 7.1, "2025-02": 7.2, "2025-03": 7.3, "2025-04": 5.9, "2025-05": 6.0, "2025-06": 5.7, "2025-07": 7.0, "2025-08": 7.2, "2025-09": 6.3, "2025-10": 6.7, "2025-11": 5.8, "2025-12": 7.3}};
+const ELEC_NET_BY_SVC = {"2024-01": 19.53, "2024-02": 17.72, "2024-03": 17.01, "2024-04": 15.06, "2024-05": 14.78, "2024-06": 14.23, "2024-07": 14.69, "2024-08": 14.51, "2024-09": 14.08, "2024-10": 17.32, "2024-11": 17.85, "2024-12": 18.35, "2025-01": 19.16, "2025-02": 18.55, "2025-03": 19.25, "2025-04": 16.3, "2025-05": 14.46, "2025-06": 12.98, "2025-07": 13.39, "2025-08": 13.53, "2025-09": 13.06, "2025-10": 15.41, "2025-11": 17.04, "2025-12": 17.55};
+const GAS_NET_BY_SVC = {"2024-01": 15.9, "2024-02": 14.56, "2024-03": 15.37, "2024-04": 12.29, "2024-05": 10.66, "2024-06": 9.93, "2024-07": 9.62, "2024-08": 9.59, "2024-09": 10.1, "2024-10": 12.03, "2024-11": 15.2, "2024-12": 15.95, "2025-01": 14.76, "2025-02": 14.33, "2025-03": 16.19, "2025-04": 12.52, "2025-05": 9.35, "2025-06": 9.28, "2025-07": 9.38, "2025-08": 10.2, "2025-09": 10.47, "2025-10": 12.34, "2025-11": 13.95, "2025-12": 14.72};
+const WATER_EUR_BY_SVC = {"2024-01": 19.43, "2024-02": 18.08, "2024-03": 19.36, "2024-04": 19.04, "2024-05": 16.59, "2024-06": 18.64, "2024-07": 18.52, "2024-08": 18.11, "2024-09": 17.33, "2024-10": 18.41, "2024-11": 16.88, "2024-12": 17.81, "2025-01": 17.87, "2025-02": 19.31, "2025-03": 19.08, "2025-04": 17.32, "2025-05": 18.0, "2025-06": 17.07, "2025-07": 19.19, "2025-08": 19.07, "2025-09": 17.42, "2025-10": 18.4, "2025-11": 18.31, "2025-12": 17.0};
+const PELLET_TOTAL_EUR = 831.54;
+const PELLET_TOTAL_KG = 4800.0;
+const PELLET_KWH_PER_KG = 4.8;
+const PELLET_TOTAL_KWH = PELLET_TOTAL_KG * PELLET_KWH_PER_KG;
+const PELLET_S_KWH = PELLET_TOTAL_KWH > 0 ? PELLET_TOTAL_EUR / PELLET_TOTAL_KWH * 100 : 0;
+const BILL_FILES = [{"v": "electricity", "m": "2024-01", "a": 38.23, "f": null}, {"v": "electricity", "m": "2024-02", "a": 34.56, "f": null}, {"v": "electricity", "m": "2024-03", "a": 36.05, "f": null}, {"v": "electricity", "m": "2024-04", "a": 28.38, "f": null}, {"v": "electricity", "m": "2024-05", "a": 22.83, "f": null}, {"v": "electricity", "m": "2024-06", "a": 22.62, "f": null}, {"v": "electricity", "m": "2024-07", "a": 23.38, "f": null}, {"v": "electricity", "m": "2024-08", "a": 20.55, "f": null}, {"v": "electricity", "m": "2024-09", "a": 21.73, "f": null}, {"v": "electricity", "m": "2024-10", "a": 27.47, "f": null}, {"v": "electricity", "m": "2024-11", "a": 35.72, "f": null}, {"v": "electricity", "m": "2024-12", "a": 37.43, "f": null}, {"v": "electricity", "m": "2025-01", "a": 34.57, "f": null}, {"v": "electricity", "m": "2025-02", "a": 35.6, "f": null}, {"v": "electricity", "m": "2025-03", "a": 38.3, "f": null}, {"v": "electricity", "m": "2025-04", "a": 29.91, "f": null}, {"v": "electricity", "m": "2025-05", "a": 21.02, "f": null}, {"v": "electricity", "m": "2025-06", "a": 22.31, "f": null}, {"v": "electricity", "m": "2025-07", "a": 23.09, "f": null}, {"v": "electricity", "m": "2025-08", "a": 20.26, "f": null}, {"v": "electricity", "m": "2025-09", "a": 23.08, "f": null}, {"v": "electricity", "m": "2025-10", "a": 30.64, "f": null}, {"v": "electricity", "m": "2025-11", "a": 36.44, "f": null}, {"v": "electricity", "m": "2025-12", "a": 35.34, "f": null}, {"v": "electricity_network", "m": "2024-01", "a": 19.53, "f": null}, {"v": "electricity_network", "m": "2024-02", "a": 17.72, "f": null}, {"v": "electricity_network", "m": "2024-03", "a": 17.01, "f": null}, {"v": "electricity_network", "m": "2024-04", "a": 15.06, "f": null}, {"v": "electricity_network", "m": "2024-05", "a": 14.78, "f": null}, {"v": "electricity_network", "m": "2024-06", "a": 14.23, "f": null}, {"v": "electricity_network", "m": "2024-07", "a": 14.69, "f": null}, {"v": "electricity_network", "m": "2024-08", "a": 14.51, "f": null}, {"v": "electricity_network", "m": "2024-09", "a": 14.08, "f": null}, {"v": "electricity_network", "m": "2024-10", "a": 17.32, "f": null}, {"v": "electricity_network", "m": "2024-11", "a": 17.85, "f": null}, {"v": "electricity_network", "m": "2024-12", "a": 18.35, "f": null}, {"v": "electricity_network", "m": "2025-01", "a": 19.16, "f": null}, {"v": "electricity_network", "m": "2025-02", "a": 18.55, "f": null}, {"v": "electricity_network", "m": "2025-03", "a": 19.25, "f": null}, {"v": "electricity_network", "m": "2025-04", "a": 16.3, "f": null}, {"v": "electricity_network", "m": "2025-05", "a": 14.46, "f": null}, {"v": "electricity_network", "m": "2025-06", "a": 12.98, "f": null}, {"v": "electricity_network", "m": "2025-07", "a": 13.39, "f": null}, {"v": "electricity_network", "m": "2025-08", "a": 13.53, "f": null}, {"v": "electricity_network", "m": "2025-09", "a": 13.06, "f": null}, {"v": "electricity_network", "m": "2025-10", "a": 15.41, "f": null}, {"v": "electricity_network", "m": "2025-11", "a": 17.04, "f": null}, {"v": "electricity_network", "m": "2025-12", "a": 17.55, "f": null}, {"v": "gas", "m": "2024-01", "a": 80.1, "f": null}, {"v": "gas", "m": "2024-02", "a": 76.7, "f": null}, {"v": "gas", "m": "2024-03", "a": 76.77, "f": null}, {"v": "gas", "m": "2024-04", "a": 50.73, "f": null}, {"v": "gas", "m": "2024-05", "a": 26.96, "f": null}, {"v": "gas", "m": "2024-06", "a": 29.96, "f": null}, {"v": "gas", "m": "2024-07", "a": 28.66, "f": null}, {"v": "gas", "m": "2024-08", "a": 28.49, "f": null}, {"v": "gas", "m": "2024-09", "a": 26.53, "f": null}, {"v": "gas", "m": "2024-10", "a": 55.15, "f": null}, {"v": "gas", "m": "2024-11", "a": 74.18, "f": null}, {"v": "gas", "m": "2024-12", "a": 76.89, "f": null}, {"v": "gas", "m": "2025-01", "a": 84.54, "f": null}, {"v": "gas", "m": "2025-02", "a": 80.16, "f": null}, {"v": "gas", "m": "2025-03", "a": 79.11, "f": null}, {"v": "gas", "m": "2025-04", "a": 54.77, "f": null}, {"v": "gas", "m": "2025-05", "a": 29.54, "f": null}, {"v": "gas", "m": "2025-06", "a": 29.24, "f": null}, {"v": "gas", "m": "2025-07", "a": 26.79, "f": null}, {"v": "gas", "m": "2025-08", "a": 25.9, "f": null}, {"v": "gas", "m": "2025-09", "a": 27.17, "f": null}, {"v": "gas", "m": "2025-10", "a": 51.22, "f": null}, {"v": "gas", "m": "2025-11", "a": 74.77, "f": null}, {"v": "gas", "m": "2025-12", "a": 83.96, "f": null}, {"v": "gas_network", "m": "2024-01", "a": 15.9, "f": null}, {"v": "gas_network", "m": "2024-02", "a": 14.56, "f": null}, {"v": "gas_network", "m": "2024-03", "a": 15.37, "f": null}, {"v": "gas_network", "m": "2024-04", "a": 12.29, "f": null}, {"v": "gas_network", "m": "2024-05", "a": 10.66, "f": null}, {"v": "gas_network", "m": "2024-06", "a": 9.93, "f": null}, {"v": "gas_network", "m": "2024-07", "a": 9.62, "f": null}, {"v": "gas_network", "m": "2024-08", "a": 9.59, "f": null}, {"v": "gas_network", "m": "2024-09", "a": 10.1, "f": null}, {"v": "gas_network", "m": "2024-10", "a": 12.03, "f": null}, {"v": "gas_network", "m": "2024-11", "a": 15.2, "f": null}, {"v": "gas_network", "m": "2024-12", "a": 15.95, "f": null}, {"v": "gas_network", "m": "2025-01", "a": 14.76, "f": null}, {"v": "gas_network", "m": "2025-02", "a": 14.33, "f": null}, {"v": "gas_network", "m": "2025-03", "a": 16.19, "f": null}, {"v": "gas_network", "m": "2025-04", "a": 12.52, "f": null}, {"v": "gas_network", "m": "2025-05", "a": 9.35, "f": null}, {"v": "gas_network", "m": "2025-06", "a": 9.28, "f": null}, {"v": "gas_network", "m": "2025-07", "a": 9.38, "f": null}, {"v": "gas_network", "m": "2025-08", "a": 10.2, "f": null}, {"v": "gas_network", "m": "2025-09", "a": 10.47, "f": null}, {"v": "gas_network", "m": "2025-10", "a": 12.34, "f": null}, {"v": "gas_network", "m": "2025-11", "a": 13.95, "f": null}, {"v": "gas_network", "m": "2025-12", "a": 14.72, "f": null}, {"v": "water", "m": "2024-01", "a": 19.43, "f": null}, {"v": "water", "m": "2024-02", "a": 18.08, "f": null}, {"v": "water", "m": "2024-03", "a": 19.36, "f": null}, {"v": "water", "m": "2024-04", "a": 19.04, "f": null}, {"v": "water", "m": "2024-05", "a": 16.59, "f": null}, {"v": "water", "m": "2024-06", "a": 18.64, "f": null}, {"v": "water", "m": "2024-07", "a": 18.52, "f": null}, {"v": "water", "m": "2024-08", "a": 18.11, "f": null}, {"v": "water", "m": "2024-09", "a": 17.33, "f": null}, {"v": "water", "m": "2024-10", "a": 18.41, "f": null}, {"v": "water", "m": "2024-11", "a": 16.88, "f": null}, {"v": "water", "m": "2024-12", "a": 17.81, "f": null}, {"v": "water", "m": "2025-01", "a": 17.87, "f": null}, {"v": "water", "m": "2025-02", "a": 19.31, "f": null}, {"v": "water", "m": "2025-03", "a": 19.08, "f": null}, {"v": "water", "m": "2025-04", "a": 17.32, "f": null}, {"v": "water", "m": "2025-05", "a": 18.0, "f": null}, {"v": "water", "m": "2025-06", "a": 17.07, "f": null}, {"v": "water", "m": "2025-07", "a": 19.19, "f": null}, {"v": "water", "m": "2025-08", "a": 19.07, "f": null}, {"v": "water", "m": "2025-09", "a": 17.42, "f": null}, {"v": "water", "m": "2025-10", "a": 18.4, "f": null}, {"v": "water", "m": "2025-11", "a": 18.31, "f": null}, {"v": "water", "m": "2025-12", "a": 17.0, "f": null}, {"v": "phone", "m": "2024-01", "a": 22.23, "f": null}, {"v": "phone", "m": "2024-02", "a": 22.03, "f": null}, {"v": "phone", "m": "2024-03", "a": 22.25, "f": null}, {"v": "phone", "m": "2024-04", "a": 22.03, "f": null}, {"v": "phone", "m": "2024-05", "a": 21.56, "f": null}, {"v": "phone", "m": "2024-06", "a": 21.85, "f": null}, {"v": "phone", "m": "2024-07", "a": 21.58, "f": null}, {"v": "phone", "m": "2024-08", "a": 22.38, "f": null}, {"v": "phone", "m": "2024-09", "a": 22.33, "f": null}, {"v": "phone", "m": "2024-10", "a": 22.29, "f": null}, {"v": "phone", "m": "2024-11", "a": 21.83, "f": null}, {"v": "phone", "m": "2024-12", "a": 21.61, "f": null}, {"v": "phone", "m": "2025-01", "a": 22.33, "f": null}, {"v": "phone", "m": "2025-02", "a": 22.39, "f": null}, {"v": "phone", "m": "2025-03", "a": 21.64, "f": null}, {"v": "phone", "m": "2025-04", "a": 21.99, "f": null}, {"v": "phone", "m": "2025-05", "a": 21.62, "f": null}, {"v": "phone", "m": "2025-06", "a": 22.23, "f": null}, {"v": "phone", "m": "2025-07", "a": 22.23, "f": null}, {"v": "phone", "m": "2025-08", "a": 21.67, "f": null}, {"v": "phone", "m": "2025-09", "a": 21.98, "f": null}, {"v": "phone", "m": "2025-10", "a": 22.04, "f": null}, {"v": "phone", "m": "2025-11", "a": 21.79, "f": null}, {"v": "phone", "m": "2025-12", "a": 22.33, "f": null}, {"v": "internet", "m": "2024-01", "a": 30.95, "f": null}, {"v": "internet", "m": "2024-02", "a": 30.82, "f": null}, {"v": "internet", "m": "2024-03", "a": 31.02, "f": null}, {"v": "internet", "m": "2024-04", "a": 31.14, "f": null}, {"v": "internet", "m": "2024-05", "a": 30.81, "f": null}, {"v": "internet", "m": "2024-06", "a": 30.88, "f": null}, {"v": "internet", "m": "2024-07", "a": 31.31, "f": null}, {"v": "internet", "m": "2024-08", "a": 31.09, "f": null}, {"v": "internet", "m": "2024-09", "a": 30.96, "f": null}, {"v": "internet", "m": "2024-10", "a": 31.01, "f": null}, {"v": "internet", "m": "2024-11", "a": 30.77, "f": null}, {"v": "internet", "m": "2024-12", "a": 30.83, "f": null}, {"v": "internet", "m": "2025-01", "a": 30.9, "f": null}, {"v": "internet", "m": "2025-02", "a": 31.05, "f": null}, {"v": "internet", "m": "2025-03", "a": 30.83, "f": null}, {"v": "internet", "m": "2025-04", "a": 30.83, "f": null}, {"v": "internet", "m": "2025-05", "a": 30.73, "f": null}, {"v": "internet", "m": "2025-06", "a": 31.08, "f": null}, {"v": "internet", "m": "2025-07", "a": 30.83, "f": null}, {"v": "internet", "m": "2025-08", "a": 31.25, "f": null}, {"v": "internet", "m": "2025-09", "a": 31.22, "f": null}, {"v": "internet", "m": "2025-10", "a": 30.73, "f": null}, {"v": "internet", "m": "2025-11", "a": 30.84, "f": null}, {"v": "internet", "m": "2025-12", "a": 31.1, "f": null}, {"v": "home_security", "m": "2024-01", "a": 15.91, "f": null}, {"v": "home_security", "m": "2024-02", "a": 15.88, "f": null}, {"v": "home_security", "m": "2024-03", "a": 16.14, "f": null}, {"v": "home_security", "m": "2024-04", "a": 16.02, "f": null}, {"v": "home_security", "m": "2024-05", "a": 15.99, "f": null}, {"v": "home_security", "m": "2024-06", "a": 16.09, "f": null}, {"v": "home_security", "m": "2024-07", "a": 16.1, "f": null}, {"v": "home_security", "m": "2024-08", "a": 15.9, "f": null}, {"v": "home_security", "m": "2024-09", "a": 15.87, "f": null}, {"v": "home_security", "m": "2024-10", "a": 15.98, "f": null}, {"v": "home_security", "m": "2024-11", "a": 15.98, "f": null}, {"v": "home_security", "m": "2024-12", "a": 15.99, "f": null}, {"v": "home_security", "m": "2025-01", "a": 16.07, "f": null}, {"v": "home_security", "m": "2025-02", "a": 16.06, "f": null}, {"v": "home_security", "m": "2025-03", "a": 16.15, "f": null}, {"v": "home_security", "m": "2025-04", "a": 15.87, "f": null}, {"v": "home_security", "m": "2025-05", "a": 15.97, "f": null}, {"v": "home_security", "m": "2025-06", "a": 15.95, "f": null}, {"v": "home_security", "m": "2025-07", "a": 16.12, "f": null}, {"v": "home_security", "m": "2025-08", "a": 15.92, "f": null}, {"v": "home_security", "m": "2025-09", "a": 15.9, "f": null}, {"v": "home_security", "m": "2025-10", "a": 15.98, "f": null}, {"v": "home_security", "m": "2025-11", "a": 15.98, "f": null}, {"v": "home_security", "m": "2025-12", "a": 15.93, "f": null}, {"v": "garbage", "m": "2024-01", "a": 13.79, "f": null}, {"v": "garbage", "m": "2024-02", "a": 14.36, "f": null}, {"v": "garbage", "m": "2024-03", "a": 13.95, "f": null}, {"v": "garbage", "m": "2024-04", "a": 14.3, "f": null}, {"v": "garbage", "m": "2024-05", "a": 14.04, "f": null}, {"v": "garbage", "m": "2024-06", "a": 13.62, "f": null}, {"v": "garbage", "m": "2024-07", "a": 14.42, "f": null}, {"v": "garbage", "m": "2024-08", "a": 14.28, "f": null}, {"v": "garbage", "m": "2024-09", "a": 14.39, "f": null}, {"v": "garbage", "m": "2024-10", "a": 14.36, "f": null}, {"v": "garbage", "m": "2024-11", "a": 14.29, "f": null}, {"v": "garbage", "m": "2024-12", "a": 13.72, "f": null}, {"v": "garbage", "m": "2025-01", "a": 13.99, "f": null}, {"v": "garbage", "m": "2025-02", "a": 13.76, "f": null}, {"v": "garbage", "m": "2025-03", "a": 13.92, "f": null}, {"v": "garbage", "m": "2025-04", "a": 13.63, "f": null}, {"v": "garbage", "m": "2025-05", "a": 13.9, "f": null}, {"v": "garbage", "m": "2025-06", "a": 14.41, "f": null}, {"v": "garbage", "m": "2025-07", "a": 13.8, "f": null}, {"v": "garbage", "m": "2025-08", "a": 14.24, "f": null}, {"v": "garbage", "m": "2025-09", "a": 13.96, "f": null}, {"v": "garbage", "m": "2025-10", "a": 13.94, "f": null}, {"v": "garbage", "m": "2025-11", "a": 14.38, "f": null}, {"v": "garbage", "m": "2025-12", "a": 14.42, "f": null}, {"v": "pellets", "m": "2024-01", "a": 52.46, "f": null}, {"v": "pellets", "m": "2024-02", "a": 53.82, "f": null}, {"v": "pellets", "m": "2024-03", "a": 49.13, "f": null}, {"v": "pellets", "m": "2024-04", "a": 50.31, "f": null}, {"v": "pellets", "m": "2024-09", "a": 55.9, "f": null}, {"v": "pellets", "m": "2024-10", "a": 52.66, "f": null}, {"v": "pellets", "m": "2024-11", "a": 52.35, "f": null}, {"v": "pellets", "m": "2024-12", "a": 54.06, "f": null}, {"v": "pellets", "m": "2025-01", "a": 48.32, "f": null}, {"v": "pellets", "m": "2025-02", "a": 52.7, "f": null}, {"v": "pellets", "m": "2025-03", "a": 52.02, "f": null}, {"v": "pellets", "m": "2025-04", "a": 54.93, "f": null}, {"v": "pellets", "m": "2025-09", "a": 49.15, "f": null}, {"v": "pellets", "m": "2025-10", "a": 55.83, "f": null}, {"v": "pellets", "m": "2025-11", "a": 48.51, "f": null}, {"v": "pellets", "m": "2025-12", "a": 49.39, "f": null}, {"v": "house_insurance", "m": "2024-01", "a": 26.05, "f": null}, {"v": "house_insurance", "m": "2024-02", "a": 26.09, "f": null}, {"v": "house_insurance", "m": "2024-03", "a": 25.86, "f": null}, {"v": "house_insurance", "m": "2024-04", "a": 25.8, "f": null}, {"v": "house_insurance", "m": "2024-05", "a": 26.2, "f": null}, {"v": "house_insurance", "m": "2024-06", "a": 25.87, "f": null}, {"v": "house_insurance", "m": "2024-07", "a": 26.05, "f": null}, {"v": "house_insurance", "m": "2024-08", "a": 26.06, "f": null}, {"v": "house_insurance", "m": "2024-09", "a": 25.96, "f": null}, {"v": "house_insurance", "m": "2024-10", "a": 26.04, "f": null}, {"v": "house_insurance", "m": "2024-11", "a": 26.01, "f": null}, {"v": "house_insurance", "m": "2024-12", "a": 26.23, "f": null}, {"v": "house_insurance", "m": "2025-01", "a": 25.85, "f": null}, {"v": "house_insurance", "m": "2025-02", "a": 26.11, "f": null}, {"v": "house_insurance", "m": "2025-03", "a": 25.86, "f": null}, {"v": "house_insurance", "m": "2025-04", "a": 25.95, "f": null}, {"v": "house_insurance", "m": "2025-05", "a": 26.09, "f": null}, {"v": "house_insurance", "m": "2025-06", "a": 25.9, "f": null}, {"v": "house_insurance", "m": "2025-07", "a": 25.9, "f": null}, {"v": "house_insurance", "m": "2025-08", "a": 26.13, "f": null}, {"v": "house_insurance", "m": "2025-09", "a": 25.78, "f": null}, {"v": "house_insurance", "m": "2025-10", "a": 25.98, "f": null}, {"v": "house_insurance", "m": "2025-11", "a": 26.26, "f": null}, {"v": "house_insurance", "m": "2025-12", "a": 26.26, "f": null}];
+const BASE_URL = '';
+const COLORS = {"electricity": "#f59e0b", "electricity_network": "#fcd34d", "gas": "#3b82f6", "gas_network": "#93c5fd", "water": "#06b6d4", "house_insurance": "#14b8a6", "internet": "#10b981", "home_security": "#10b981", "phone": "#8b5cf6", "garbage": "#6b7280", "pellets": "#ef4444"};
+const LABELS = {"electricity": "Electricity", "electricity_network": "Electricity Network", "gas": "Gas", "gas_network": "Gas Network", "water": "Water", "house_insurance": "House Insurance", "internet": "Internet", "home_security": "Home Security", "phone": "Phone", "garbage": "Garbage", "pellets": "Pellets"};
+const ICONS = {"electricity": "⚡", "electricity_network": "🔌", "gas": "🔥", "gas_network": "🏭", "water": "💧", "phone": "📱", "internet": "🌐", "home_security": "🔒", "garbage": "🗑️", "pellets": "🪵", "house_insurance": "🏠"};
+
+function iLabel(v){return (ICONS[v]||'')+' '+(LABELS[v]||v);}
+const {vendors,months,data}=RAW;
+let active=new Set(vendors);
+const allYears=[...new Set(months.map(m=>m.slice(0,4)))].sort();
+let activeYears=new Set(allYears);
+const MONTH_NAMES=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const allMonthNums=[...new Set(months.map(m=>m.slice(5,7)))].sort();
+let activeMonths=new Set(allMonthNums);
+function fm(){return months.filter(m=>activeYears.has(m.slice(0,4))&&activeMonths.has(m.slice(5,7)));}
+function fmtMonth(m){const[y,mo]=m.split('-');return['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+mo]+" '"+y.slice(2);}
+
+function updateCards(){
+  const _fm=fm();const latestMonth=_fm[_fm.length-1]||months[months.length-1],last12=_fm.slice(-12);
+  let grandTotal=0,latestTotal=0,sum12=0;
+  vendors.filter(v=>active.has(v)).forEach(v=>{_fm.forEach(m=>grandTotal+=(data[v]||{})[m]||0);latestTotal+=(data[v]||{})[latestMonth]||0;last12.forEach(m=>sum12+=(data[v]||{})[m]||0);});
+  const topV=vendors.filter(v=>active.has(v)).map(v=>[v,_fm.reduce((s,m)=>s+((data[v]||{})[m]||0),0)]).sort((a,b)=>b[1]-a[1])[0]||['\u2014',0];
+  const n12=Math.min(12,last12.length||1);
+  const cards=[{l:'Latest Month',v:'\u20ac'+latestTotal.toFixed(2),s:fmtMonth(latestMonth)},{l:'Monthly Avg',v:'\u20ac'+(sum12/n12).toFixed(2),s:'last '+n12+' months'},{l:'Total',v:'\u20ac'+grandTotal.toFixed(0),s:_fm.length+' months'},{l:'Top Category',v:iLabel(topV[0]),s:'\u20ac'+topV[1].toFixed(0)+' total'}];
+  const el=document.getElementById('summaryCards');
+  el.innerHTML='';
+  cards.forEach(c=>{el.insertAdjacentHTML('beforeend',`<div class="card"><div class="card-label">${c.l}</div><div class="card-value">${c.v}</div><div class="card-sub">${c.s}</div></div>`);});
+}
+function _makeToggleChip(label,isAll,color,onAll,onNone){
+  const chip=document.createElement('div');chip.className='chip'+(isAll?' active':'');
+  chip.style.cssText=isAll?`background:${color};border-color:${color};color:#fff`:`background:var(--surface);border-color:${color};color:var(--muted)`;
+  chip.textContent=label;chip.onclick=isAll?onNone:onAll;return chip;
+}
+function buildYearFilters(){
+  const c=document.getElementById('yearFilters');c.innerHTML='';
+  const allActive=allYears.every(y=>activeYears.has(y));
+  c.appendChild(_makeToggleChip(allActive?'Clear':'All',allActive,'#6366f1',
+    ()=>{allYears.forEach(y=>activeYears.add(y));buildYearFilters();rebuildAll();},
+    ()=>{activeYears.clear();activeYears.add(allYears[allYears.length-1]);buildYearFilters();rebuildAll();}));
+  allYears.forEach(y=>{const chip=document.createElement('div');chip.className='chip'+(activeYears.has(y)?' active':'');chip.dataset.year=y;chip.style.cssText=activeYears.has(y)?'background:#6366f1;border-color:#6366f1;color:#fff':'background:var(--surface);border-color:#6366f1;color:var(--muted)';chip.textContent=y;chip.onclick=()=>{if(activeYears.has(y)){if(activeYears.size>1)activeYears.delete(y);}else{activeYears.add(y);}buildYearFilters();rebuildAll();};c.appendChild(chip);});
+}
+function buildMonthFilters(){
+  const c=document.getElementById('monthFilters');c.innerHTML='';
+  const allActive=allMonthNums.every(m=>activeMonths.has(m));
+  c.appendChild(_makeToggleChip(allActive?'Clear':'All',allActive,'#a855f7',
+    ()=>{allMonthNums.forEach(m=>activeMonths.add(m));buildMonthFilters();rebuildAll();},
+    ()=>{activeMonths.clear();activeMonths.add(allMonthNums[0]);buildMonthFilters();rebuildAll();}));
+  allMonthNums.forEach(m=>{
+    const chip=document.createElement('div');chip.className='chip'+(activeMonths.has(m)?' active':'');
+    chip.style.cssText=activeMonths.has(m)?'background:#a855f7;border-color:#a855f7;color:#fff':'background:var(--surface);border-color:#a855f7;color:var(--muted)';
+    chip.textContent=MONTH_NAMES[parseInt(m)-1];
+    chip.onclick=()=>{if(activeMonths.has(m)){if(activeMonths.size>1)activeMonths.delete(m);}else{activeMonths.add(m);}buildMonthFilters();rebuildAll();};
+    c.appendChild(chip);
+  });
+}
+function rebuildAll(){const _fm2=fm();const w=Math.max(window.innerWidth-80,_fm2.length*50);document.getElementById('costInner').style.minWidth=w+'px';document.getElementById('unitInner').style.minWidth=w+'px';chart.data=chartData();chart.update();updateCards();buildTable();buildUnitCostChart();buildPieChart();buildYoY();buildMoMChart();buildCategoryCards();buildConsumptionChart();buildForecastChart();}
+function buildFilters(){
+  function makeChips(container){
+    const allActive=vendors.every(v=>active.has(v));
+    container.appendChild(_makeToggleChip(allActive?'Clear':'All',allActive,'#64748b',
+      ()=>{vendors.forEach(v=>active.add(v));syncChips();_syncVendorToggles();rebuildAll();},
+      ()=>{active.clear();active.add(vendors[0]);syncChips();_syncVendorToggles();rebuildAll();}));
+    vendors.forEach(v=>{const chip=document.createElement('div');chip.className='chip'+(active.has(v)?' active':'');chip.dataset.vendor=v;chip.style.cssText=active.has(v)?`background:${COLORS[v]||'#888'};border-color:${COLORS[v]||'#888'}`:`background:var(--surface);border-color:${COLORS[v]||'#888'};color:var(--muted)`;chip.innerHTML=`${ICONS[v]||''} ${LABELS[v]||v}`;chip.onclick=()=>{if(active.has(v)){if(active.size>1)active.delete(v);}else{active.add(v);}syncChips();_syncVendorToggles();rebuildAll();};container.appendChild(chip);});
+  }
+  makeChips(document.getElementById('filters'));
+}
+function _syncVendorToggles(){
+  const allActive=vendors.every(v=>active.has(v));
+  document.querySelectorAll('#filters > .chip:first-child').forEach(t=>{
+    t.textContent=allActive?'Clear':'All';t.className='chip'+(allActive?' active':'');
+    t.style.cssText=allActive?'background:#64748b;border-color:#64748b;color:#fff':'background:var(--surface);border-color:#64748b;color:var(--muted)';
+    t.onclick=allActive?()=>{active.clear();active.add(vendors[0]);syncChips();_syncVendorToggles();rebuildAll();}:()=>{vendors.forEach(v=>active.add(v));syncChips();_syncVendorToggles();rebuildAll();};
+  });
+}
+function syncChips(){
+  document.querySelectorAll('.chip[data-vendor]').forEach(chip=>{const v=chip.dataset.vendor;if(active.has(v)){chip.classList.add('active');chip.style.background=COLORS[v]||'#888';chip.style.borderColor=COLORS[v]||'#888';chip.style.color='#fff';}else{chip.classList.remove('active');chip.style.background='var(--surface)';chip.style.borderColor=COLORS[v]||'#888';chip.style.color='var(--muted)';}});
+}
+function chartData(){const _fm=fm();return{labels:_fm.map(fmtMonth),datasets:vendors.filter(v=>active.has(v)).map(v=>({label:v,_vendor:v,data:_fm.map(m=>(data[v]||{})[m]||0),backgroundColor:COLORS[v]||'#888',borderRadius:2}))};}
+const barIconPlugin={id:'barIcons',afterDraw(ch){const{ctx}=ch;ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';ch.data.datasets.forEach((ds,di)=>{const meta=ch.getDatasetMeta(di);if(meta.hidden)return;const vk=ds._vendor||ds.label;const icon=ICONS[vk];if(!icon)return;meta.data.forEach((bar,i)=>{const h=bar.height||0;if(h<18)return;const sz=Math.min(14,h-4);ctx.font=sz+'px sans-serif';ctx.fillText(icon,bar.x,bar.y+h/2);});});ctx.restore();}};
+let chart,unitChart,pieChart,consumptionChartObj,forecastChartObj,momChartObj;
+function buildChart(){
+  const _fm2=fm();const w=Math.max(window.innerWidth-80,_fm2.length*50);
+  document.getElementById('costInner').style.minWidth=w+'px';
+  document.getElementById('unitInner').style.minWidth=w+'px';
+  const totalPlugin={id:'barTotals',afterDraw(ch){const{ctx}=ch;ctx.save();ctx.font='bold 10px sans-serif';ctx.fillStyle='#94a3b8';ctx.textAlign='center';const meta=ch.getDatasetMeta(0);if(!meta||!meta.data)return;const nIdx=meta.data.length;for(let i=0;i<nIdx;i++){let sum=0;ch.data.datasets.forEach(ds=>{sum+=(ds.data[i]||0);});if(sum<=0)continue;const xPos=meta.data[i].x;let yPos=1e9;ch.data.datasets.forEach((_,di)=>{const m2=ch.getDatasetMeta(di);if(m2.hidden)return;const bar=m2.data[i];if(bar&&bar.y<yPos)yPos=bar.y;});ctx.fillText('\u20ac'+Math.round(sum),xPos,yPos-5);}ctx.restore();}};
+  chart=new Chart(document.getElementById('chart').getContext('2d'),{type:'bar',data:chartData(),plugins:[totalPlugin,barIconPlugin],options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{mode:'index',callbacks:{label:c=>`${iLabel(c.dataset.label)}: \u20ac${c.parsed.y.toFixed(2)}`,footer:items=>`Total: \u20ac${items.reduce((a,b)=>a+b.parsed.y,0).toFixed(2)}`}}},scales:{x:{stacked:true,grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',font:{size:11}}},y:{stacked:true,grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',callback:v=>'\u20ac'+v}}}}});
+}
+function syncScrolls(){
+  const s1=document.getElementById('costScroll'),s2=document.getElementById('unitScroll');let syncing=false;
+  s1.addEventListener('scroll',()=>{if(!syncing){syncing=true;s2.scrollLeft=s1.scrollLeft;syncing=false;}});
+  s2.addEventListener('scroll',()=>{if(!syncing){syncing=true;s1.scrollLeft=s2.scrollLeft;syncing=false;}});
+}
+function buildUnitCostChart(){
+  if(unitChart){unitChart.destroy();unitChart=null;}
+  const elecRows=[],gasKwhRows=[],gasM3Rows=[],waterM3Rows=[],pelletRows=[];
+  const _fm=fm();_fm.forEach(m=>{
+    const elecEur=((data.electricity||{})[m]||0)+(ELEC_NET_BY_SVC[m]||0);
+    const eKwh=CONSUMPTION.elec_kwh[m];
+    const gasEur=((data.gas||{})[m]||0)+(GAS_NET_BY_SVC[m]||0);
+    const gKwh=CONSUMPTION.gas_kwh[m];const gM3=CONSUMPTION.gas_m3[m];
+    const waterEur=WATER_EUR_BY_SVC[m]||0;
+    const wM3=CONSUMPTION.water_m3[m];
+    const hasPellet=(data.pellets||{})[m];
+    elecRows.push(eKwh?(elecEur/eKwh*100):null);
+    gasKwhRows.push(gKwh?(gasEur/gKwh*100):null);
+    gasM3Rows.push(gM3?(gasEur/gM3*100):null);
+    waterM3Rows.push(wM3?(waterEur/wM3):null);
+    pelletRows.push(hasPellet?PELLET_S_KWH:null);
+  });
+  unitChart=new Chart(document.getElementById('unitCostChart').getContext('2d'),{type:'line',data:{labels:_fm.map(fmtMonth),datasets:[
+    {label:'Electricity s/kWh',data:elecRows,borderColor:'#f59e0b',backgroundColor:'rgba(245,158,11,.15)',fill:true,tension:0.3,pointRadius:4,yAxisID:'y'},
+    {label:'Gas s/kWh',data:gasKwhRows,borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,.15)',fill:true,tension:0.3,pointRadius:4,yAxisID:'y'},
+    {label:'Gas s/m\u00b3',data:gasM3Rows,borderColor:'#93c5fd',backgroundColor:'rgba(147,197,253,.15)',fill:false,tension:0.3,pointRadius:4,borderDash:[5,3],yAxisID:'y'},
+    {label:'Water \u20ac/m\u00b3',data:waterM3Rows,borderColor:'#06b6d4',backgroundColor:'rgba(6,182,212,.15)',fill:false,tension:0.3,pointRadius:4,borderDash:[5,3],yAxisID:'y2'},
+    {label:'Pellets s/kWh',data:pelletRows,borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,.15)',fill:false,tension:0,pointRadius:4,borderDash:[8,4],yAxisID:'y'},
+  ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#94a3b8',font:{size:12}}},tooltip:{callbacks:{label:c=>{const v=c.parsed.y;if(v==null)return c.dataset.label+': \u2014';if(c.dataset.label.startsWith('Water'))return c.dataset.label+': \u20ac'+v.toFixed(2);return c.dataset.label+': '+v.toFixed(2);}}}},scales:{x:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',font:{size:11}}},y:{position:'left',grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',callback:v=>v+' s'},title:{display:true,text:'cents',color:'#64748b'}},y2:{position:'right',grid:{drawOnChartArea:false},ticks:{color:'#06b6d4',stepSize:0.05,callback:v=>'\u20ac'+v.toFixed(2)},title:{display:true,text:'\u20ac/m\u00b3',color:'#06b6d4'}}}}});
+}
+
+/* ── Pie Chart: Spending by Category ── */
+function buildPieChart(){
+  if(pieChart){pieChart.destroy();pieChart=null;}
+  const _fm=fm();
+  const totals=vendors.filter(v=>active.has(v)).map(v=>{let s=0;_fm.forEach(m=>s+=(data[v]||{})[m]||0);return{v,s};}).filter(x=>x.s>0).sort((a,b)=>b.s-a.s);
+  const pieIconPlugin={id:'pieIcons',afterDraw(ch){const{ctx}=ch;const meta=ch.getDatasetMeta(0);if(!meta||!meta.data)return;ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';meta.data.forEach((arc,i)=>{const v=totals[i].v;const icon=ICONS[v];if(!icon)return;const angle=(arc.startAngle+arc.endAngle)/2;const r=(arc.innerRadius+arc.outerRadius)/2;const x=arc.x+Math.cos(angle)*r;const y=arc.y+Math.sin(angle)*r;const span=arc.endAngle-arc.startAngle;if(span<0.3)return;const sz=Math.min(16,span*20);ctx.font=sz+'px sans-serif';ctx.fillText(icon,x,y);});ctx.restore();}};
+  pieChart=new Chart(document.getElementById('pieChart').getContext('2d'),{type:'doughnut',data:{
+    labels:totals.map(t=>iLabel(t.v)),
+    datasets:[{data:totals.map(t=>Math.round(t.s*100)/100),backgroundColor:totals.map(t=>COLORS[t.v]||'#888'),borderWidth:0}]
+  },plugins:[pieIconPlugin],options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right',labels:{color:'#94a3b8',padding:10,font:{size:11}}},tooltip:{callbacks:{label:c=>{const total=c.dataset.data.reduce((a,b)=>a+b,0);return iLabel(totals[c.dataIndex].v)+': \u20ac'+c.parsed.toFixed(2)+' ('+(c.parsed/total*100).toFixed(1)+'%)';}}}}}});
+}
+
+/* ── Year-over-Year Table ── */
+function buildYoY(){
+  const _fm=fm();
+  const yearTotals={};const yearMonths={};
+  _fm.forEach(m=>{const y=m.slice(0,4);if(!yearTotals[y])yearTotals[y]=0;if(!yearMonths[y])yearMonths[y]=0;yearMonths[y]++;vendors.filter(v=>active.has(v)).forEach(v=>yearTotals[y]+=(data[v]||{})[m]||0);});
+  const years=Object.keys(yearTotals).sort();
+  let html='';let prev=null;
+  years.forEach(y=>{
+    const t=yearTotals[y];const avg=t/yearMonths[y];
+    let changeHtml='\u2014';
+    if(prev!==null&&prev>0){const pct=((t-prev)/prev*100);changeHtml=`<span class="${pct>0?'change-up':'change-down'}">${pct>0?'+':''}${pct.toFixed(1)}%</span>`;}
+    html+=`<tr><td>${y}</td><td class="amount">\u20ac${t.toFixed(0)}</td><td class="amount">${changeHtml}</td><td class="amount">\u20ac${avg.toFixed(0)}/mo</td></tr>`;
+    prev=t;
+  });
+  document.getElementById('yoyBody').innerHTML=html;
+}
+
+/* ── Month-over-Month Comparison (stacked by vendor per year-group) ── */
+function buildMoMChart(){
+  if(momChartObj){momChartObj.destroy();momChartObj=null;}
+  const activeMonthsSorted=[...activeMonths].sort();
+  const yearsUsed=[...activeYears].sort();
+  const labels=[];const groupKeys=[];
+  activeMonthsSorted.forEach(mo=>{
+    yearsUsed.forEach(y=>{labels.push(MONTH_NAMES[parseInt(mo)-1]+" '"+y.slice(2));groupKeys.push(y+'-'+mo);});
+  });
+  const activeVendors=vendors.filter(v=>active.has(v));
+  const datasets=activeVendors.map(v=>({
+    label:iLabel(v),_vendor:v,
+    data:groupKeys.map(k=>Math.round(((data[v]||{})[k]||0)*100)/100),
+    backgroundColor:COLORS[v]||'#888',
+    borderRadius:2,
+    stack:'s',
+  }));
+  const w=Math.max(400,groupKeys.length*45);
+  momChartObj=new Chart(document.getElementById('momChart').getContext('2d'),{type:'bar',data:{labels,datasets},plugins:[barIconPlugin],options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#94a3b8',font:{size:11}}},tooltip:{mode:'index',callbacks:{label:c=>{const v=c.parsed.y;return v?'  '+iLabel(c.dataset.label)+': \u20ac'+v.toFixed(2):'';},footer:items=>{const total=items.reduce((a,b)=>a+b.parsed.y,0);return total?'Total: \u20ac'+total.toFixed(2):'';}}}},scales:{x:{stacked:true,grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',font:{size:10},maxRotation:45}},y:{stacked:true,grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',callback:v=>'\u20ac'+v}}}}});
+  document.getElementById('momInner').style.minWidth=w+'px';
+}
+
+/* ── Category Breakdown Cards (monthly avg per category) ── */
+function buildCategoryCards(){
+  const _fm=fm();const n=_fm.length||1;
+  const el=document.getElementById('categoryCards');el.innerHTML='';
+  const items=vendors.filter(v=>active.has(v)).map(v=>{let s=0;_fm.forEach(m=>s+=(data[v]||{})[m]||0);return{v,total:s,avg:s/n};}).filter(x=>x.total>0).sort((a,b)=>b.total-a.total);
+  items.forEach(it=>{
+    const label=iLabel(it.v);const color=COLORS[it.v]||'#888';
+    el.insertAdjacentHTML('beforeend',`<div class="card" style="border-left:3px solid ${color}"><div class="card-label">${label}</div><div class="card-value">\u20ac${it.avg.toFixed(0)}<span style="font-size:0.6em;color:var(--muted)">/mo</span></div><div class="card-sub">\u20ac${it.total.toFixed(0)} total over ${_fm.length} months</div></div>`);
+  });
+}
+
+/* ── Consumption Trends (usage, not cost) ── */
+function buildConsumptionChart(){
+  if(consumptionChartObj){consumptionChartObj.destroy();consumptionChartObj=null;}
+  const _fm=fm();
+  const eKwh=[],gM3=[],wM3=[],pKg=[];
+  _fm.forEach(m=>{
+    eKwh.push(CONSUMPTION.elec_kwh[m]||null);
+    gM3.push(CONSUMPTION.gas_m3[m]||null);
+    wM3.push(CONSUMPTION.water_m3[m]||null);
+    /* pellet kg: reverse from EUR spread. Use season data if available */
+    pKg.push(null); /* pellet consumption is seasonal lump, skip monthly */
+  });
+  consumptionChartObj=new Chart(document.getElementById('consumptionChart').getContext('2d'),{type:'line',data:{labels:_fm.map(fmtMonth),datasets:[
+    {label:'Electricity (kWh)',data:eKwh,borderColor:'#f59e0b',backgroundColor:'rgba(245,158,11,.1)',fill:true,tension:0.3,pointRadius:3,yAxisID:'y'},
+    {label:'Gas (m\u00b3)',data:gM3,borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,.1)',fill:true,tension:0.3,pointRadius:3,yAxisID:'y'},
+    {label:'Water (m\u00b3)',data:wM3,borderColor:'#06b6d4',backgroundColor:'rgba(6,182,212,.1)',fill:false,tension:0.3,pointRadius:3,yAxisID:'y2'},
+  ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#94a3b8',font:{size:12}}},tooltip:{callbacks:{label:c=>{const v=c.parsed.y;if(v==null)return c.dataset.label+': \u2014';return c.dataset.label+': '+v.toFixed(1);}}}},scales:{x:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',font:{size:11}}},y:{position:'left',grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8'},title:{display:true,text:'kWh / m\u00b3 (gas)',color:'#64748b'}},y2:{position:'right',grid:{drawOnChartArea:false},ticks:{color:'#06b6d4'},title:{display:true,text:'m\u00b3 (water)',color:'#06b6d4'}}}}});
+}
+
+/* ── Budget Forecast (3-month projection using 6-month rolling average ±1σ) ── */
+function buildForecastChart(){
+  if(forecastChartObj){forecastChartObj.destroy();forecastChartObj=null;}
+  const _fm=fm();if(_fm.length<3)return;
+  /* Calculate monthly totals across all active vendors */
+  const monthlyTotals=_fm.map(m=>{let s=0;vendors.filter(v=>active.has(v)).forEach(v=>s+=(data[v]||{})[m]||0);return s;});
+  /* Rolling 6-month average for forecast baseline */
+  const window6=Math.min(6,monthlyTotals.length);
+  const recent=monthlyTotals.slice(-window6);
+  const avg=recent.reduce((a,b)=>a+b,0)/window6;
+  const stdDev=Math.sqrt(recent.reduce((a,b)=>a+(b-avg)**2,0)/window6);
+  /* Generate 3 forecast month labels */
+  const lastMonth=_fm[_fm.length-1];
+  const [ly,lm]=[parseInt(lastMonth.slice(0,4)),parseInt(lastMonth.slice(5,7))];
+  const forecastMonths=[];const forecastLabels=[];
+  for(let i=1;i<=3;i++){
+    let fy=ly,fmo=lm+i;if(fmo>12){fmo-=12;fy++;}
+    forecastMonths.push(`${fy}-${String(fmo).padStart(2,'0')}`);
+    forecastLabels.push(fmtMonth(`${fy}-${String(fmo).padStart(2,'0')}`));
+  }
+  const allLabels=_fm.slice(-12).map(fmtMonth).concat(forecastLabels);
+  const actualData=monthlyTotals.slice(-12);
+  const forecastData=new Array(actualData.length).fill(null).concat([avg,avg,avg]);
+  const upperBand=new Array(actualData.length).fill(null).concat([avg+stdDev,avg+stdDev,avg+stdDev]);
+  const lowerBand=new Array(actualData.length).fill(null).concat([Math.max(0,avg-stdDev),Math.max(0,avg-stdDev),Math.max(0,avg-stdDev)]);
+  const actualFull=actualData.concat([null,null,null]);
+  const avgLine=new Array(allLabels.length).fill(avg);
+
+  forecastChartObj=new Chart(document.getElementById('forecastChart').getContext('2d'),{type:'line',data:{labels:allLabels,datasets:[
+    {label:'Actual',data:actualFull,borderColor:'#8b5cf6',backgroundColor:'rgba(139,92,246,.15)',fill:false,tension:0.3,pointRadius:4,borderWidth:2},
+    {label:'Forecast',data:forecastData,borderColor:'#f59e0b',backgroundColor:'rgba(245,158,11,.15)',fill:false,tension:0,pointRadius:6,borderWidth:2,borderDash:[6,3],pointStyle:'triangle'},
+    {label:'Upper band (+1\u03c3)',data:upperBand,borderColor:'rgba(239,68,68,.3)',backgroundColor:'rgba(239,68,68,.05)',fill:'+1',tension:0,pointRadius:0,borderWidth:1,borderDash:[3,3]},
+    {label:'Lower band (-1\u03c3)',data:lowerBand,borderColor:'rgba(34,197,94,.3)',backgroundColor:'rgba(34,197,94,.05)',fill:false,tension:0,pointRadius:0,borderWidth:1,borderDash:[3,3]},
+    {label:'6-mo avg',data:avgLine,borderColor:'rgba(148,163,184,.3)',backgroundColor:'transparent',fill:false,tension:0,pointRadius:0,borderWidth:1,borderDash:[2,4]},
+  ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#94a3b8',font:{size:11}}},tooltip:{callbacks:{label:c=>{const v=c.parsed.y;if(v==null)return '';return c.dataset.label+': \u20ac'+v.toFixed(0);}}}},scales:{x:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',font:{size:11}}},y:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',callback:v=>'\u20ac'+v}}}}});
+}
+
+function buildTable(){
+  const _fm=fm();const last36=_fm.slice(-36);
+  const last36Set=new Set(last36);
+  const rows=BILL_FILES.filter(r=>last36Set.has(r.m)&&active.has(r.v));
+  rows.sort((a,b)=>b.m.localeCompare(a.m)||a.v.localeCompare(b.v));
+  document.getElementById('tableBody').innerHTML=rows.map(r=>{
+    const label=iLabel(r.v);
+    const dot=`<span class="dot" style="background:${COLORS[r.v]||'#888'};margin-right:8px"></span>`;
+    const amt='\u20ac'+r.a.toFixed(2);
+    if(r.f && BASE_URL){
+      const url=BASE_URL+'/bills/'+encodeURIComponent(r.f);
+      return `<tr style="cursor:pointer" onclick="window.open('${url}','_blank')"><td>${dot}${label}</td><td>${r.m}</td><td class="amount"><a href="${url}" target="_blank" style="color:#e2e8f0;text-decoration:none">${amt} &#128279;</a></td></tr>`;
+    }
+    return `<tr><td>${dot}${label}</td><td>${r.m}</td><td class="amount">${amt}</td></tr>`;
+  }).join('');
+}
+buildYearFilters();buildMonthFilters();updateCards();buildFilters();buildChart();buildUnitCostChart();syncScrolls();buildTable();buildPieChart();buildYoY();buildMoMChart();buildCategoryCards();buildConsumptionChart();buildForecastChart();
+</script></body></html>

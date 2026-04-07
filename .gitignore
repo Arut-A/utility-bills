@@ -1,0 +1,25 @@
+# OAuth tokens and API credentials
+credentials/
+
+# Raw PDF bills (financial data)
+raw/
+
+# Generated dashboard
+dashboard.html
+
+# Sensitive vendor config
+config/vendors/security.yaml
+
+# Synology NAS artifacts
+#recycle/
+@eaDir/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Backup files
+*.bak
+*.bak-*

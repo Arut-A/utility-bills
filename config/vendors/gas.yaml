@@ -1,0 +1,37 @@
+# Alexela — Gas (Maagaas)
+vendor_category: gas
+company: Alexela
+system_prompt: >
+  You are a precise Estonian utility bill extractor for Alexela gas bills.
+  Extract ONLY current period. IGNORE viivised, eelmise kuu võlg, balances.
+  In Alexela bills the grand total is labeled "KOKKU EUR" — always use this as total_incl_vat.
+  "Summa KM-ta" rows show the excl-VAT service amount — do NOT use as the total.
+  Return ONLY valid JSON — no prose, no markdown fences.
+required_fields:
+  - invoice_date
+  - total_incl_vat
+  - total_consumption_m3
+extraction_hints: >
+  CRITICAL field mapping for Alexela gas invoices:
+    total_incl_vat = value labeled "KOKKU EUR" — grand total INCLUDING VAT.
+    total_excl_vat = value labeled "Maksustatav käive (24%)" — excl VAT subtotal.
+    vat_amount = value labeled "Käibemaks 24%" or "Käibemaks 22%".
+    Do NOT use: the "Maagaas X €" line which shows excl-VAT service cost.
+  CRITICAL: Estonian dates are formatted DD.MM.YYYY. Do NOT confuse date parts with amounts.
+  VAT rates: before 2024-01-01 = 20%, 2024-01-01 to 2025-06-30 = 22%, from 2025-07-01 = 24%.
+  total_consumption_m3 = Tarbimine field in m3 (e.g. "Tarbimine: 106,562 m3").
+  Extract price per m3 from the detail line (Maagaas Veebruar... row, Hind column).
+  CROSS-CHECK: total_excl_vat * (1 + vat_rate) = total_incl_vat.
+json_schema:
+  invoice_number: "string or null"
+  invoice_date: "YYYY-MM-DD"
+  billing_period_start: "YYYY-MM-DD or null"
+  billing_period_end: "YYYY-MM-DD or null"
+  due_date: "YYYY-MM-DD or null"
+  total_consumption_m3: "number"
+  price_per_m3_excl_vat: "number or null"
+  price_per_m3_incl_vat: "number or null"
+  total_excl_vat: "number — Maksustatav käive value"
+  vat_amount: "number — Käibemaks 24% value"
+  total_incl_vat: "number — KOKKU EUR value, grand total including VAT"
+  currency: "EUR"
