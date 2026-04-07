@@ -16,8 +16,20 @@ A self-hosted, config-driven pipeline that automatically scrapes utility bill em
 
 ## Screenshots
 
-<!-- Screenshots go here once captured -->
-> 📸 *Screenshots coming soon — or [open the demo](demo/dashboard_demo.html) to see it live.*
+**Overview — filters, summary cards, monthly cost by category**
+![Overview](demo/screenshots/Screenshot%201.jpg)
+
+**Unit costs (¢/kWh, €/m³), spending by category, year-over-year**
+![Unit Costs](demo/screenshots/Screenshot%202.jpg)
+
+**Month-over-month comparison + category breakdown cards**
+![Month over Month](demo/screenshots/Screenshot%203.jpg)
+
+**Consumption trends + 3-month budget forecast**
+![Consumption & Forecast](demo/screenshots/Screenshot%204.jpg)
+
+**Bill details table**
+![Bill Table](demo/screenshots/Screenshot%205.jpg)
 
 ---
 
