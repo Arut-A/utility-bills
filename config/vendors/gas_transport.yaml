@@ -1,0 +1,37 @@
+# Adven Eesti — Gas Network Transport
+vendor_category: gas_transport
+company: Adven Eesti
+system_prompt: >
+  Precise extractor for Adven Eesti gas network transport bills.
+  ONLY current period. IGNORE viivised, debts. Return ONLY valid JSON.
+  In Adven bills the grand total is labeled "Arve summa kokku" or "TASUMISELE KUULUB".
+  The header area also shows "Summa käibemaksuta" (excl VAT total) and the incl-VAT total.
+  Always use the incl-VAT total as total_incl_vat.
+required_fields:
+  - invoice_date
+  - total_incl_vat
+  - total_transported_m3
+extraction_hints: >
+  CRITICAL field mapping for Adven Eesti invoices:
+    total_incl_vat = value labeled "Arve summa kokku" or "TASUMISELE KUULUB" — INCLUDING VAT.
+    In the detail table: look for the "Kokku" column value (sum of current period charges + VAT).
+    total_excl_vat = the "KM-ta" column total for current period charges (excl late fees).
+    vat_amount = the "KM summa" column total.
+    Do NOT use "Summa käibemaksuta" alone as the total — verify against "Arve summa kokku".
+  CRITICAL: Estonian dates are formatted DD.MM.YYYY. Do NOT confuse date parts with amounts.
+  VAT rates: before 2024-01-01 = 20%, 2024-01-01 to 2025-06-30 = 22%, from 2025-07-01 = 24%.
+  total_transported_m3 = the m3 consumption from meter readings (Lõppnäit - Algnäit).
+  Services: võrguteenus (network), aktsiis (excise), gaasivaru tasu (reserve fee).
+  invoice_date = "Arve kuupäev" field.
+  CROSS-CHECK: total_excl_vat + vat_amount = total_incl_vat (excluding viivis lines).
+json_schema:
+  invoice_number: "string or null"
+  invoice_date: "YYYY-MM-DD"
+  billing_period_start: "YYYY-MM-DD or null"
+  billing_period_end: "YYYY-MM-DD or null"
+  due_date: "YYYY-MM-DD or null"
+  total_transported_m3: "number"
+  total_excl_vat: "number — KM-ta column total for current period"
+  vat_amount: "number — KM summa column total"
+  total_incl_vat: "number — Arve summa kokku or TASUMISELE KUULUB, including VAT"
+  currency: "EUR"

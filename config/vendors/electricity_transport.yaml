@@ -1,0 +1,42 @@
+# Imatra Elekter — Electricity Network Transport
+vendor_category: electricity_transport
+company: Imatra Elekter
+system_prompt: >
+  You are a precise Estonian utility bill extractor for Imatra Elekter electricity
+  network transport bills. Translate all field names to English in your output.
+  Extract ONLY current period charges. IGNORE viivised, previous debts, balances.
+  In Imatra bills the grand total is labeled "ARVE KOKKU" — always use this as total_incl_vat.
+  Also available in the machine-readable header as DFC_Amount.
+  Return ONLY valid JSON — no prose, no markdown fences.
+required_fields:
+  - invoice_date
+  - total_incl_vat
+  - total_consumption_kwh
+extraction_hints: >
+  CRITICAL field mapping for Imatra Elekter invoices:
+    total_incl_vat = value labeled "ARVE KOKKU" — grand total INCLUDING VAT.
+    Also visible as "Palume tasuda X €" or "DFC_Amount" in machine-readable header.
+    total_excl_vat = value labeled "Tooted ja teenused kokku" — DO NOT use as total_incl_vat.
+    vat_amount = value labeled "Käibemaks" with percentage.
+  CRITICAL: Estonian dates are formatted DD.MM.YYYY. Do NOT confuse date parts with amounts.
+  VAT rates: before 2024-01-01 = 20%, 2024-01-01 to 2025-06-30 = 22%, from 2025-07-01 = 24%.
+  total_consumption_kwh = sum of day (päevatariif) and night (öötariif) kWh from the table.
+  Extract day and night kWh separately from the meter reading differences (Näitude vahe).
+  Extract each network service line: võrguteenus, taastuvenergia tasu, varustuskindluse tasu,
+  elektriaktsiis — translate descriptions to English.
+  invoice_date = "Arve väljastatud" or "DFC_InvoiceDate" field.
+  CROSS-CHECK: total_incl_vat = total_excl_vat + vat_amount.
+json_schema:
+  invoice_number: "string or null"
+  invoice_date: "YYYY-MM-DD"
+  billing_period_start: "YYYY-MM-DD or null"
+  billing_period_end: "YYYY-MM-DD or null"
+  due_date: "YYYY-MM-DD or null"
+  day_consumption_kwh: "number or null"
+  night_consumption_kwh: "number or null"
+  total_consumption_kwh: "number"
+  line_items: "array of {description_en, amount_excl_vat, amount_incl_vat}"
+  total_excl_vat: "number — Tooted ja teenused kokku"
+  vat_amount: "number — Käibemaks amount"
+  total_incl_vat: "number — ARVE KOKKU, grand total including VAT"
+  currency: "EUR"

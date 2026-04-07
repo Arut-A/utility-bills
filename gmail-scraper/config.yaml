@@ -1,0 +1,44 @@
+# gmail-scraper/config.yaml
+
+gmail:
+  label_name: UTILITY_BILL
+
+  allowed_senders:
+    - "@alexela.ee"
+    - "alexela"
+    - "@imatra.ee"
+    - "imatra"
+    - "@adven.ee"
+    - "adven"
+    - "@telia.ee"
+    - "telia"
+    - "@tele2.ee"
+    - "tele2"
+    - "@viimsivesi.ee"
+    - "viimsi"
+    - "@finbite.eu"
+    - "@keskkonnateenused.ee"
+    - "keskkonnateenused"
+    - "keskkond"
+    - "graanul"
+    - "pellet"
+    - "@warmeston.ee"
+    - "warmeston"
+
+  subject_keywords:
+    - arve
+    - invoice
+    - bill
+    - koguarve
+    - e-arve
+    - maksa
+    - tasuda
+    - arvete
+
+  allowed_mime_types:
+    - application/pdf
+    - application/octet-stream
+
+scraper:
+  poll_interval_seconds: 300
+  bills_raw_dir: /data/bills/raw

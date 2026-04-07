@@ -1,0 +1,381 @@
+gmail:
+  subject_keywords:
+  - arve
+  - invoice
+  - bill
+  - koguarve
+  - e-arve
+  - maksa
+  - tasuda
+  - arvete
+vendors:
+  electricity:
+    display_name: Electricity
+    provider: Alexela
+    dashboard:
+      color: '#f59e0b'
+      label: Electricity
+    gmail:
+      sender_domains:
+      - '@alexela.ee'
+      - alexela
+      gmail_label: Electricity
+    classification:
+      filename_slugs:
+      - alexela
+      text_keywords:
+      - alexela
+      - elektrienergia
+      - as alexela
+      require_keywords: []
+      exclude_keywords:
+      - maagaas
+      - natural gas
+      - gaas
+      - m³
+      - m3
+    parsing:
+      total_patterns:
+      - KOKKU EUR\s*([\d]+[.,][\d]{2})\b
+      - KOKKU:\s*\n\s*([\d]+[.,][\d]{2})
+      consumption:
+        field: energy_kwh
+        unit: kWh
+        patterns:
+        - Tarbimine:\s*([\d.,]+)\s*kWh
+        multi_value_pattern: ^([\d]+\.[\d]+)\s*kWh
+        multi_value_context: Tarbimine
+        multi_value_limit: 2
+      billing_period:
+        patterns:
+        - '[Aa]rveldusperiood\s*[:\s]*(\d{2}\.\d{2}\.\d{4})\s*[-–]\s*(\d{2}\.\d{2}\.\d{4})'
+  electricity_transport:
+    display_name: Electricity Network
+    provider: Imatra Elekter
+    dashboard:
+      color: '#fcd34d'
+      label: Electricity Network
+    gmail:
+      sender_domains:
+      - '@imatra.ee'
+      - imatra
+      gmail_label: Electricity Network
+    classification:
+      filename_slugs:
+      - imatraelekter
+      - imatra
+      text_keywords:
+      - imatra elekter
+      - imatra elekter as
+    parsing:
+      total_patterns:
+      - ARVE KOKKU\s*\n[^\d\n]*\n\s*([\d]+[.,][\d]{2})\b
+      - DFC_Amount:"([\d.]+)"
+      billing_period:
+        scan_consecutive_dates:
+          start_line: 50
+          end_line: 70
+    special:
+      month_alignment: billing_period_start
+  gas:
+    display_name: Gas
+    provider: Alexela
+    dashboard:
+      color: '#3b82f6'
+      label: Gas
+    gmail:
+      sender_domains:
+      - '@alexela.ee'
+      - alexela
+      gmail_label: Gas
+    classification:
+      filename_slugs:
+      - alexela
+      text_keywords:
+      - maagaas
+      - natural gas
+      - alexela
+      require_keywords:
+      - maagaas
+      - natural gas
+      - gaas
+      - m³
+      - m3
+    parsing:
+      total_patterns:
+      - KOKKU EUR\s*([\d]+[.,][\d]{2})\b
+      - KOKKU:\s*\n\s*([\d]+[.,][\d]{2})
+      consumption:
+        field: gas_m3
+        unit: m3
+        patterns:
+        - Tarbimine:\s*([\d.,\s]+)\s*m3
+        secondary:
+          field: energy_kwh
+          patterns:
+          - Tarbimine:.*?m3,\s*([\d.,\s]+)\s*kWh
+        multi_value_pattern_m3: ([\d]+\.[\d]+)\s*m3
+        multi_value_pattern_kwh: ([\d]+\.[\d]+)\s*kWh
+        multi_value_context: Tarbimine
+      billing_period:
+        patterns:
+        - '[Aa]rveldusperiood\s*[:\s]*(\d{2}\.\d{2}\.\d{4})\s*[-–]\s*(\d{2}\.\d{2}\.\d{4})'
+  gas_transport:
+    display_name: Gas Network
+    provider: Adven
+    dashboard:
+      color: '#93c5fd'
+      label: Gas Network
+    gmail:
+      sender_domains:
+      - '@adven.ee'
+      - adven
+      gmail_label: Gas network
+    classification:
+      filename_slugs:
+      - adven
+      text_keywords:
+      - adven
+      - as adven
+    parsing:
+      total_patterns:
+      - TASUMISELE KUULUB\s*[^\d\n]{0,10}([\d]+[.,][\d]{2})\b
+      - Arve summa kokku\s*[:\s]*([\d]+[.,][\d]{2})\b
+      billing_period:
+        patterns:
+        - (\d{2}\.\d{2}\.\d{4})\s*[-–]\s*(\d{2}\.\d{2}\.\d{4})
+    special:
+      month_alignment: billing_period_start
+  water:
+    display_name: Water
+    provider: Viimsi Vesi
+    dashboard:
+      color: '#06b6d4'
+      label: Water
+    gmail:
+      sender_domains:
+      - '@viimsivesi.ee'
+      - viimsi
+      - '@finbite.eu'
+      gmail_label: Water
+    classification:
+      filename_slugs:
+      - viimsivesi
+      - viimsi
+      text_keywords:
+      - veevarustus
+      - kanalisatsioon
+      - viimsi vesi
+    parsing:
+      total_patterns:
+      - Arve summa \(km-ga\)\s*\n\s*[\d]+[.,][\d]{2}\s*\n\s*[\d]+[.,][\d]{2}\s*\n\s*([\d]+[.,][\d]{2})
+      consumption:
+        field: water_m3
+        unit: m3
+        patterns:
+        - \bVESI\s*\n\s*KANAL(?:\s*\n\s*VIIVIS)?\s*\n\s*([\d]+(?:[.,][\d]+)?)
+      billing_period:
+        patterns:
+        - Näit:.*?\((\d{2}\.\d{2}\.\d{4})\)\s*Näit:.*?\((\d{2}\.\d{2}\.\d{4})\)
+    special:
+      month_alignment: billing_period_end
+  phone:
+    display_name: Phone
+    provider: Tele2
+    dashboard:
+      color: '#8b5cf6'
+      label: Phone
+    gmail:
+      sender_domains:
+      - '@tele2.ee'
+      - tele2
+      gmail_label: Phone
+    classification:
+      filename_slugs:
+      - arved
+      - tele2
+      text_keywords:
+      - tele2
+      - mobiil
+      - mobile
+      - phone
+      exclude_keywords:
+      - interneti kasutus
+      - mobiilne internet
+    parsing:
+      total_patterns:
+      - Arve kokku[^\d\n]*\n\s*[\d]+[.,][\d]{2}[^\d\n]*\n\s*[\d]+[.,][\d]{2}[^\d\n]*\n\s*([\d]+[.,][\d]{2})
+  internet:
+    display_name: Internet
+    provider: Telia
+    dashboard:
+      color: '#10b981'
+      label: Internet
+    gmail:
+      sender_domains:
+      - '@telia.ee'
+      - telia
+      gmail_label: Internet
+    classification:
+      filename_slugs:
+      - telia
+      text_keywords:
+      - telia
+      - internet
+      - lairiba
+      - broadband
+      exclude_keywords:
+      - turvalisus
+      - valvesüsteem
+      - alarm
+      - monitooring
+      - valve
+      - turvafirma
+    parsing:
+      total_patterns:
+      - Tasumisele kuulub\s*\n\s*([\d]+[.,][\d]{2})
+      - Tasumisele kuulub\s+([\d]+[.,][\d]{2})
+    special:
+      no_pdf_variant: true
+      no_pdf_query: from:@telia.ee ({subject_keywords}) -has:attachment -label:Archieve
+      body_total_patterns:
+      - '[Mm]aksmisele kuuluv summa seisuga\s*(\d{2}\.\d{2}\.\d{4})\s*on\s*([\d]+[.,][\d]{2})'
+      - Tasumisele kuulub[^\d]{0,30}([\d]+[.,][\d]{2})
+      body_date_pattern: (\d{2}\.\d{2}\.\d{4})
+      body_invoice_pattern: arve\s*(?:nr\.?|number)?\s*([\d]+)
+  home_security:
+    display_name: Home Security
+    provider: Telia
+    dashboard:
+      color: '#10b981'
+      label: Home Security
+    gmail:
+      sender_domains:
+      - '@telia.ee'
+      - telia
+      gmail_label: Security
+    classification:
+      filename_slugs:
+      - telia
+      text_keywords:
+      - turvalisus
+      - valvesüsteem
+      - alarm
+      - monitooring
+      - valve
+      - turvafirma
+      require_keywords:
+      - turvalisus
+      - valvesüsteem
+      - alarm
+      - monitooring
+      - valve
+      - turvafirma
+    parsing:
+      total_patterns:
+      - Tasumisele kuulub\s*\n\s*([\d]+[.,][\d]{2})
+      - Tasumisele kuulub\s+([\d]+[.,][\d]{2})
+  garbage:
+    display_name: Garbage
+    provider: Keskkonnateenused
+    dashboard:
+      color: '#6b7280'
+      label: Garbage
+    gmail:
+      sender_domains:
+      - '@keskkonnateenused.ee'
+      - keskkonnateenused
+      - keskkond
+      gmail_label: Waste
+    classification:
+      filename_slugs:
+      - keskkonnateenused
+      text_keywords:
+      - prügi
+      - jäätme
+      - keskkonnateenused
+    parsing:
+      total_patterns:
+      - Kokku\s*:\s*\n\s*Tasumine:\s*\n\s*([\d]+[.,][\d]{2})
+  pellets:
+    display_name: Pellets
+    provider: Warmeston
+    dashboard:
+      color: '#ef4444'
+      label: Pellets
+    gmail:
+      sender_domains:
+      - graanul
+      - pellet
+      - '@warmeston.ee'
+      - warmeston
+      gmail_label: Pellets
+    classification:
+      filename_slugs:
+      - warmeston
+      - graanul
+      text_keywords:
+      - pellet
+      - küttepuu
+      - hake
+      - graanul
+      - warmeston
+    parsing:
+      total_patterns:
+      - \bKokku\b[^\d\n]{0,5}\n\s*([\d]+[.,][\d]{2})
+      - \bKokku\b\s+([\d]+[.,][\d]{2})
+      consumption:
+        field: other_units
+        unit: kg
+        unit_type: kg
+        patterns:
+        - Netokaal:\s*([\d., ]+)\s*kg
+    special:
+      spread_heating_season:
+        start_month: 9
+        end_month: 4
+      skip_rules:
+      - match_filename:
+        - pakkumine
+      - match_text:
+        - ettemaks
+        unless_text:
+        - Netokaal:\s*[\d., ]+\s*kg
+  house_insurance:
+    display_name: House Insurance
+    provider: Pro KM
+    dashboard:
+      color: '#14b8a6'
+      label: House Insurance
+    gmail:
+      label: Home insurance
+      sender_domains:
+      - prokm
+      - prokindlustus
+      - pzu
+      - draudimas
+      gmail_label: Home insurance
+    classification:
+      filename_slugs:
+      - prokm
+      - prokindlustus
+      - pzu
+      - draudimas
+      - insurance
+      text_keywords:
+      - kindlustus
+      - prokm
+      - prokindlustus
+      - poliis
+    parsing:
+      total_patterns:
+      - KOKKU TASUDA\s*\n?\s*([\d]+[.,][\d]{2})
+      - Kokku\s*[€\u20ac]?\s*:\s*\n?\s*([\d]+[.,][\d]{2})
+      billing_period:
+        patterns:
+        - (\d{2}\.\d{2}\.\d{4})\s*-\s*(\d{2}\.\d{2}\.\d{4})\s*\n\s*Poliisi number
+        - osamakse\s*\((\d{2}\.\d{2}\.\d{4})-(\d{2}\.\d{2}\.\d{4})\)
+        - perioodiks\s*(\d{2}\.\d{2}\.\d{4})\s*-\s*(\d{2}\.\d{2}\.\d{4})
+        quarterly_from_annual: true
+    special:
+      pro_rate_across_period: true

@@ -1,0 +1,30 @@
+# Tele2 — Mobile Phone
+vendor_category: phone
+company: Tele2
+system_prompt: >
+  You are a precise Estonian utility bill data extractor for Tele2 phone bills.
+  Extract ONLY the current billing period total for PHONE services (calls, SMS, voice plan).
+  IGNORE: viivised (late fees), eelmise perioodi võlg (previous period debt),
+  outstanding balances. Do NOT include debt carry-forward in total_incl_vat.
+  total_incl_vat = "Arve kokku" (current period charges only, includes VAT).
+  Return ONLY a valid JSON object — no prose, no markdown fences.
+required_fields:
+  - invoice_date
+  - total_incl_vat
+extraction_hints: >
+  CRITICAL: Estonian dates are formatted DD.MM.YYYY (e.g. "Maksetähtaeg 20.12.2025").
+  Do NOT confuse a date like "20.12" with a monetary amount — it is a date, not euros.
+  total_incl_vat = "Arve kokku" — this is ONLY current period, excludes old debt.
+  Do NOT use "Tasumisele kuulub" or "Maksmisele kuulub" — these include previous debts.
+  If the bill shows "eelmise perioodi võlg" or "viivised", exclude those from total.
+  VAT rates: before 2024-01-01 = 20%, 2024-01-01 to 2025-06-30 = 22%, from 2025-07-01 = 24%.
+  invoice_date = "Arve kuupäev" or "Kuupäev" field.
+json_schema:
+  invoice_number: "string or null"
+  invoice_date: "YYYY-MM-DD"
+  billing_period_start: "YYYY-MM-DD or null"
+  billing_period_end: "YYYY-MM-DD or null"
+  total_excl_vat: "number or null"
+  vat_amount: "number or null"
+  total_incl_vat: "number — Arve kokku, current period only, includes VAT, excludes old debt"
+  currency: "EUR"

@@ -1,0 +1,35 @@
+# Telia — Internet (koduinternet / mobile internet / kodused teenused)
+vendor_category: internet
+company: Telia
+system_prompt: >
+  Precise extractor for Telia internet bills (home internet = koduinternet,
+  mobile internet = interneti kasutus, or combined home services = kodused teenused).
+  Extract ONLY current month charges for internet service.
+  IGNORE viivised, previous month debts, unrelated service charges.
+  total_incl_vat = "Tasumisele kuulub" for current period ONLY, including VAT.
+  Return ONLY valid JSON — no prose, no markdown fences.
+required_fields:
+  - invoice_date
+  - total_incl_vat
+extraction_hints: >
+  CRITICAL: Estonian dates are formatted DD.MM.YYYY (e.g. "Maksetähtaeg 20.09.2024").
+  The due date "Maksetähtaeg" may contain a value like "20.09" which LOOKS like a euro amount
+  but is part of a date — do NOT use it as total_incl_vat.
+  total_incl_vat = "Tasumisele kuulub" value (current period only, includes VAT).
+  This is typically a small amount (e.g. 3.18 EUR for koduinternet only) or larger
+  if mobile internet is included (e.g. 30.50 EUR).
+  If the bill says "Kodused teenused" or "koduinternet" → home internet service.
+  If the bill says "interneti kasutus" or "mobiilne internet" → mobile internet.
+  Both are classified as internet vendor_category.
+  VAT rates: before 2024-01-01 = 20%, 2024-01-01 to 2025-06-30 = 22%, from 2025-07-01 = 24%.
+  invoice_date = "Kuupäev" field on the invoice.
+json_schema:
+  invoice_number: "string or null"
+  invoice_date: "YYYY-MM-DD"
+  billing_period_start: "YYYY-MM-DD or null"
+  billing_period_end: "YYYY-MM-DD or null"
+  service_type: "koduinternet or mobile_internet or combined"
+  total_excl_vat: "number or null"
+  vat_amount: "number or null"
+  total_incl_vat: "number — Tasumisele kuulub, current period only, includes VAT"
+  currency: "EUR"

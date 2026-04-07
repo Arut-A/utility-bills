@@ -1,0 +1,5 @@
+vendor_category: house_insurance
+company: Pro Kindlustusmaakler / PZU
+required_fields:
+  - total_incl_vat
+  - invoice_date

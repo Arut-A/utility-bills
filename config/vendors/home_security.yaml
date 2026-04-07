@@ -1,0 +1,24 @@
+# Telia — Home Security / Alarm monitoring
+vendor_category: home_security
+company: Telia
+system_prompt: >
+  You are a precise Estonian utility bill data extractor for Telia home security
+  (valve / turvalisus / alarm monitoring) monthly service bills.
+  Extract ONLY the current month total.
+  IGNORE: viivised, previous month debts, outstanding balances.
+  Return ONLY a valid JSON object — no prose, no markdown fences.
+required_fields:
+  - invoice_date
+  - total_incl_vat
+extraction_hints: >
+  Extract the monthly monitoring/alarm service fee for the current period.
+  Ignore any debt carry-forward or late fees.
+json_schema:
+  invoice_number: "string or null"
+  invoice_date: "YYYY-MM-DD"
+  billing_period_start: "YYYY-MM-DD or null"
+  billing_period_end: "YYYY-MM-DD or null"
+  total_excl_vat: "number or null"
+  vat_amount: "number or null"
+  total_incl_vat: "number"
+  currency: "EUR"
