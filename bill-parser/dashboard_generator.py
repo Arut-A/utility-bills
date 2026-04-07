@@ -441,7 +441,7 @@ function syncChips(){
   document.querySelectorAll('.chip[data-vendor]').forEach(chip=>{const v=chip.dataset.vendor;if(active.has(v)){chip.classList.add('active');chip.style.background=COLORS[v]||'#888';chip.style.borderColor=COLORS[v]||'#888';chip.style.color='#fff';}else{chip.classList.remove('active');chip.style.background='var(--surface)';chip.style.borderColor=COLORS[v]||'#888';chip.style.color='var(--muted)';}});
 }
 function chartData(){const _fm=fm();return{labels:_fm.map(fmtMonth),datasets:vendors.filter(v=>active.has(v)).map(v=>({label:v,_vendor:v,data:_fm.map(m=>(data[v]||{})[m]||0),backgroundColor:COLORS[v]||'#888',borderRadius:2}))};}
-const barIconPlugin={id:'barIcons',afterDraw(ch){const{ctx}=ch;ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';ch.data.datasets.forEach((ds,di)=>{const meta=ch.getDatasetMeta(di);if(meta.hidden)return;const vk=ds._vendor||ds.label;const icon=ICONS[vk];if(!icon)return;meta.data.forEach((bar,i)=>{const h=bar.height||0;if(h<18)return;const sz=Math.min(14,h-4);ctx.font=sz+'px sans-serif';ctx.fillText(icon,bar.x,bar.y+h/2);});});ctx.restore();}};
+const barIconPlugin={id:'barIcons',afterDatasetsDraw(ch){const{ctx}=ch;ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';ch.data.datasets.forEach((ds,di)=>{const meta=ch.getDatasetMeta(di);if(meta.hidden)return;const vk=ds._vendor||ds.label;const icon=ICONS[vk];if(!icon)return;meta.data.forEach((bar,i)=>{const h=Math.abs(bar.base-bar.y);if(h<18)return;const sz=Math.min(14,h-4);ctx.font=sz+'px sans-serif';ctx.fillText(icon,bar.x,(bar.y+bar.base)/2);});});ctx.restore();}};
 let chart,unitChart,pieChart,consumptionChartObj,forecastChartObj,momChartObj;
 function buildChart(){
   const _fm2=fm();const w=Math.max(window.innerWidth-80,_fm2.length*50);
