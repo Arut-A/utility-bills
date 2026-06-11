@@ -115,7 +115,7 @@ async def auth_google(body: GoogleAuthBody, request: Request):
         SESSION_SECRET, algorithm="HS256")
 
     log.info("Login OK for %s from %s", email, ip)
-    _telegram_notice(f"📱 Nirgi Bills app: login OK ({email}, session {SESSION_DAYS}d)")
+    _telegram_notice(f"📱 Household Bills app: login OK ({email}, session {SESSION_DAYS}d)")
     return SessionResponse(session_token=token,
                            expires_at=expires.isoformat(), email=email)
 
