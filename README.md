@@ -79,7 +79,7 @@ All `/api/*` routes accept a Bearer session JWT (app) or the internal `X-API-Key
   [`demo/dashboard_demo.html`](demo/dashboard_demo.html).
 - **Android app** — native Jetpack Compose client with a decision-support home
   screen, interactive charts, offline cache and Google Sign-In:
-  **[github.com/Arut-A/nirgi-bills](https://github.com/Arut-A/nirgi-bills)**.
+  **[github.com/Arut-A/household-bills](https://github.com/Arut-A/household-bills)**.
 
 ### Web dashboard
 
