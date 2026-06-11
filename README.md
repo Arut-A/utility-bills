@@ -1,35 +1,40 @@
-# Utility Bills — self-hosted pipeline + apps
+<p align="center">
+  <img src="docs/banner.png" alt="Utility Bills" width="100%">
+</p>
 
-A self-hosted system that turns the utility-bill PDFs landing in your inbox into a
-clean, trustworthy view of household spending — and tells you **what changed** and
-**where you're deviating from normal**, not just the totals.
+<p align="center">
+  A self-hosted system that turns the utility-bill PDFs landing in your inbox into a
+  clean, trustworthy view of household spending — telling you <b>what changed</b> and
+  <b>where you're deviating from normal</b>, not just the totals.
+</p>
 
-Email → parse → database → API → **web dashboard** and a native **Android app**,
-all reading through one shared calculation engine so every number agrees.
-
-![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-REST-009688?logo=fastapi&logoColor=white)
-![MariaDB](https://img.shields.io/badge/MariaDB-10.11-003545?logo=mariadb&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-blue)
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white">
+  <img src="https://img.shields.io/badge/FastAPI-REST-009688?logo=fastapi&logoColor=white">
+  <img src="https://img.shields.io/badge/MariaDB-10.11-003545?logo=mariadb&logoColor=white">
+  <img src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white">
+  <img src="https://img.shields.io/badge/tests-passing-22c55e?logo=pytest&logoColor=white">
+  <img src="https://img.shields.io/badge/License-MIT-blue">
+</p>
 
 ## How it works
 
-```
-Utility-bill email
-      │  Gmail scraper (daily)        ← allow-listed senders, downloads PDFs
-      ▼
-   Parser (PyMuPDF + config-driven regex per vendor)
-      │                                 energy/usage, amounts, periods, per-unit cost
-      ▼
-   MariaDB  ──►  bills_api (FastAPI REST)
-                     │  ├─ web dashboard (Chart.js, interactive)
-                     │  └─ Android app  (Jetpack Compose)   ← github.com/Arut-A/nirgi-bills
-                     ▼
-              shared calculation engine  →  identical numbers everywhere
+```mermaid
+flowchart LR
+    A["📧 Bill email"] -->|"daily scrape, allow-listed senders"| B["gmail-scraper"]
+    B -->|"PDF"| C["bill-parser<br/>PyMuPDF + per-vendor regex"]
+    C --> D[("MariaDB")]
+    D --> E["bills_api<br/>FastAPI REST"]
+    E --> F["🖥️ Web dashboard<br/>Chart.js"]
+    E --> G["📱 Android app<br/>Jetpack Compose"]
+    S["shared/aggregate.py<br/>one calculation engine"] -.->|"attribution + accrual clip"| C
+    S -.-> E
+    style S fill:#312e81,stroke:#6366f1,color:#fff
+    style E fill:#1e293b,stroke:#22c55e,color:#fff
 ```
 
-Four containers: `gmail-scraper`, `bill-parser`, `api-server`, `mariadb`.
+Four containers — `gmail-scraper`, `bill-parser`, `api-server`, `mariadb` — and one
+shared calculation engine so the dashboard, the API and the app can never disagree.
 
 ## What's notable
 
@@ -76,7 +81,11 @@ All `/api/*` routes accept a Bearer session JWT (app) or the internal `X-API-Key
   screen, interactive charts, offline cache and Google Sign-In:
   **[github.com/Arut-A/nirgi-bills](https://github.com/Arut-A/nirgi-bills)**.
 
-![Dashboard](demo/screenshots/Screenshot%201.jpg)
+### Web dashboard
+
+| Overview | Unit costs | Comparison |
+|:---:|:---:|:---:|
+| ![](demo/screenshots/Screenshot%201.jpg) | ![](demo/screenshots/Screenshot%202.jpg) | ![](demo/screenshots/Screenshot%203.jpg) |
 
 ## Run it
 
