@@ -5,11 +5,11 @@ Regenerate dashboard.html fully from DB — no hardcoded data.
 import json
 import logging
 import os
-from collections import defaultdict
-from calendar import monthrange
-from datetime import date
 
 from db import get_engine
+from shared.aggregate import (build_aggregates, ROWS_SQL,
+                              VENDOR_DISPLAY as _VENDOR_DISPLAY,
+                              PELLET_KWH_PER_KG)
 from sqlalchemy import text
 
 log = logging.getLogger("dashboard_generator")
@@ -17,12 +17,6 @@ log = logging.getLogger("dashboard_generator")
 DASHBOARD_PATH = os.environ.get("DASHBOARD_PATH", "/data/dashboard.html")
 DASHBOARD_BASE_URL = os.environ.get("DASHBOARD_BASE_URL", "")
 
-_VENDOR_DISPLAY = {
-    "electricity_transport": "electricity_network",
-    "gas_transport":         "gas_network",
-}
-
-PELLET_KWH_PER_KG = 4.8
 
 
 def _load_vendor_config():
@@ -59,46 +53,11 @@ def _load_vendor_config():
     return colors, labels
 
 
-def _split_by_month(total, start_str, end_str):
-    start = date.fromisoformat(start_str)
-    end = date.fromisoformat(end_str)
-    total_days = (end - start).days + 1
-    months = {}
-    d = start
-    while d <= end:
-        y, m = d.year, d.month
-        month_end = date(y, m, monthrange(y, m)[1])
-        period_end = min(month_end, end)
-        days = (period_end - d).days + 1
-        key = f"{y}-{m:02d}"
-        months[key] = round(total * days / total_days, 2)
-        d = date(y, m + 1, 1) if m < 12 else date(y + 1, 1, 1)
-    return months
-
-
-def _service_month(start_str):
-    """Return YYYY-MM from a billing_period_start date string."""
-    if not start_str:
-        return None
-    d = date.fromisoformat(str(start_str))
-    return f"{d.year}-{d.month:02d}"
-
-
 def _query_all() -> dict:
     """Query DB and return all data needed for the dashboard."""
     engine = get_engine()
     with engine.connect() as conn:
-        rows = conn.execute(text(
-            "SELECT vendor_category, invoice_date, total_amount,"
-            " billing_period_start, billing_period_end,"
-            " energy_kwh, gas_m3, water_m3, other_units, unit_type,"
-            " raw_pdf_path"
-            " FROM parsed_bills"
-            " WHERE status = 'success'"
-            "   AND invoice_date IS NOT NULL"
-            "   AND total_amount IS NOT NULL"
-            " ORDER BY vendor_category, invoice_date"
-        )).fetchall()
+        rows = conn.execute(text(ROWS_SQL)).fetchall()
     return rows
 
 
@@ -109,111 +68,38 @@ def generate_dashboard() -> str | None:
             log.warning("No bill data in DB")
             return None
 
-        bill_data = defaultdict(lambda: defaultdict(float))
-        bill_files = []    # [{vendor, month, amount, file}, ...]
-        elec_kwh = {}      # service_month -> kWh
-        gas_m3 = {}        # service_month -> m3
-        gas_kwh = {}       # service_month -> kWh
-        water_m3 = {}       # service_month -> m3
-        water_eur_svc = {}  # service_month -> EUR (for unit cost alignment)
-        elec_net_svc = {}   # service_month -> EUR
-        gas_net_svc = {}    # service_month -> EUR
-        # pellets grouped by heating season (Sep-Apr)
-        # key = year where season starts (e.g. 2025 for Sep 2025 - Apr 2026)
-        pellet_by_season = defaultdict(lambda: {"eur": 0.0, "kg": 0.0})
+        agg = build_aggregates(rows)
+        bill_data       = agg["bill_data"]
+        bill_files      = agg["bill_files"]
+        elec_kwh        = agg["elec_kwh"]
+        gas_m3          = agg["gas_m3"]
+        gas_kwh         = agg["gas_kwh"]
+        water_m3        = agg["water_m3"]
+        water_eur_svc   = agg["water_eur_svc"]
+        elec_net_svc    = agg["elec_net_svc"]
+        gas_net_svc     = agg["gas_net_svc"]
+        pellet_total_eur = agg["pellet_total_eur"]
+        pellet_total_kg  = agg["pellet_total_kg"]
+        pellet_total_kwh = agg["pellet_total_kwh"]
+        cutoff_ym       = agg["cutoff_ym"]
+        all_months      = agg["months"]
+        all_vendors     = agg["vendors"]
+        raw_json = {"vendors": all_vendors, "months": all_months, "data": bill_data}
 
-        for (vendor_cat, inv_date, total_amt, bp_start, bp_end,
-             energy, gas, water, other, utype, raw_path) in rows:
-            total_amt = float(total_amt)
-            inv_month = str(inv_date)[:7]
-            display = _VENDOR_DISPLAY.get(vendor_cat, vendor_cat)
-            svc = _service_month(bp_start)
-
-            # ── Pellets: collect by heating season (Sep-Apr) ──────────
-            #    Invoice May-Dec → season starts that year
-            #    Invoice Jan-Apr → season starts previous year
-            if vendor_cat == "pellets":
-                inv_y, inv_m = int(inv_month[:4]), int(inv_month[5:7])
-                season_year = inv_y if inv_m >= 5 else inv_y - 1
-                pellet_by_season[season_year]["eur"] += total_amt
-                if other:
-                    pellet_by_season[season_year]["kg"] += float(other)
-                continue
-
-            # ── Insurance: split by period ───────────────────────────
-            if vendor_cat == "house_insurance" and bp_start and bp_end:
-                monthly = _split_by_month(total_amt, str(bp_start), str(bp_end))
-                for m, amt in monthly.items():
-                    bill_data["house_insurance"][m] += amt
-                continue
-
-            # ── Network bills: store by service month for unit costs ─
-            if vendor_cat == "electricity_transport" and svc:
-                elec_net_svc[svc] = total_amt
-            elif vendor_cat == "gas_transport" and svc:
-                gas_net_svc[svc] = total_amt
-
-            # ── Electricity consumption by service month ─────────────
-            if vendor_cat == "electricity" and energy:
-                month_key = svc or inv_month
-                elec_kwh[month_key] = float(energy)
-
-            # ── Gas consumption by service month ─────────────────────
-            if vendor_cat == "gas":
-                month_key = svc or inv_month
-                if gas:
-                    gas_m3[month_key] = float(gas)
-                if energy:
-                    gas_kwh[month_key] = float(energy)
-
-            # ── Water consumption + cost by service month ─────────────
-            #    Water meter readings span two months (e.g. Jan 31 – Feb 28);
-            #    the service month is the billing_period_end month (Feb).
-            if vendor_cat == "water":
-                water_svc = _service_month(bp_end) or svc or inv_month
-                if water:
-                    water_m3[water_svc] = float(water)
-                water_eur_svc[water_svc] = total_amt
-
-            # ── Determine cost month: use service month for vendors
-            #    that bill in arrears (invoice lags 1 month) ────────
-            if vendor_cat == "water" and bp_end:
-                cost_month = _service_month(bp_end)
-            elif vendor_cat in ("electricity_transport", "gas_transport") and svc:
-                cost_month = svc
-            else:
-                cost_month = inv_month
-
-            bill_data[display][cost_month] += total_amt
-
-            # Track individual bill files for the table links
-            pdf_name = os.path.basename(str(raw_path)) if raw_path and not str(raw_path).startswith("email:") else None
-            bill_files.append({"v": display, "m": cost_month, "a": round(total_amt, 2), "f": pdf_name})
-
-        # ── Pellets spread Sep-Apr per heating season ─────────────────
-        pellet_total_eur = 0.0
-        pellet_total_kg = 0.0
-        for season_year, season in pellet_by_season.items():
-            pellet_total_eur += season["eur"]
-            pellet_total_kg += season["kg"]
-            monthly_pellet = round(season["eur"] / 8, 2)
-            for offset in range(8):  # Sep..Dec = 0..3, Jan..Apr = 4..7
-                y = season_year if offset < 4 else season_year + 1
-                mo = 9 + offset if offset < 4 else offset - 3
-                bill_data["pellets"][f"{y}-{mo:02d}"] += monthly_pellet
-
-        pellet_total_kwh = pellet_total_kg * PELLET_KWH_PER_KG
-
-        # Round all
-        for v in bill_data:
-            bill_data[v] = {m: round(a, 2) for m, a in sorted(bill_data[v].items())}
-
-        all_months = sorted(set(m for d in bill_data.values() for m in d))
-        all_vendors = sorted(bill_data.keys())
-        raw_json = {"vendors": all_vendors, "months": all_months, "data": dict(bill_data)}
-
-        # Build HTML
-        html = _TEMPLATE_TOP
+        # Build HTML — inline Chart.js so the file works offline (Telegram's
+        # in-app viewer blocks CDN scripts; opening dashboard.html locally
+        # without internet would also fail otherwise).
+        chartjs_path = os.path.join(os.path.dirname(__file__), "chart.umd.min.js")
+        try:
+            with open(chartjs_path, "r", encoding="utf-8") as f:
+                chartjs_inline = f.read()
+            # Defensive: escape </script> in case the minifier ever emits it
+            # in a string literal — would otherwise close the host <script> tag.
+            chartjs_inline = chartjs_inline.replace("</script>", "<\\/script>")
+        except FileNotFoundError:
+            log.warning("chart.umd.min.js not found at %s; falling back to CDN", chartjs_path)
+            chartjs_inline = '/* fallback */ document.write(\'<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"><\\/script>\');'
+        html = _TEMPLATE_TOP.replace("__CHARTJS_INLINE__", chartjs_inline)
         html += "const RAW = " + json.dumps(raw_json, ensure_ascii=False) + ";\n"
         html += "const CONSUMPTION = " + json.dumps({
             "elec_kwh":  {m: round(v, 3) for m, v in sorted(elec_kwh.items())},
@@ -234,6 +120,7 @@ def generate_dashboard() -> str | None:
         html += "const PELLET_S_KWH = PELLET_TOTAL_KWH > 0 ? PELLET_TOTAL_EUR / PELLET_TOTAL_KWH * 100 : 0;\n"
         html += "const BILL_FILES = " + json.dumps(bill_files, ensure_ascii=False) + ";\n"
         html += f"const BASE_URL = '{DASHBOARD_BASE_URL}';\n"
+        html += f"const CUTOFF_YM = '{cutoff_ym}';  // months >= this are forward-allocated (prepaid), excluded from Latest/rolling avg/forecast\n"
 
         # Load colors/labels from vendor config
         colors, labels = _load_vendor_config()
@@ -268,7 +155,7 @@ _TEMPLATE_TOP = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Home Utility Bills Dashboard</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>__CHARTJS_INLINE__</script>
 <style>
   :root { --bg:#0f1117; --surface:#1a1d27; --border:#2a2d3a; --text:#e2e8f0; --muted:#64748b; --up:#ef4444; --down:#22c55e; }
   * { box-sizing:border-box; margin:0; padding:0; }
@@ -289,7 +176,26 @@ _TEMPLATE_TOP = r"""<!DOCTYPE html>
   .chart-inner { height:350px; }
   .chart-title { font-size:0.9rem; font-weight:600; margin-bottom:16px; color:var(--muted); }
   .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-bottom:28px; }
-  @media (max-width:900px) { .grid-2 { grid-template-columns:1fr; } }
+  .grid-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:24px; margin-bottom:28px; }
+  @media (max-width:900px) { .grid-2, .grid-3 { grid-template-columns:1fr; } }
+  @media (max-width:600px) {
+    body { padding:12px; }
+    h1 { font-size:1.3rem; }
+    .sticky-filters { margin:0 -12px; padding-left:12px; padding-right:12px; }
+    .filters { flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; -ms-overflow-style:none; gap:6px; padding-bottom:4px; }
+    .filters::-webkit-scrollbar { display:none; }
+    .chip { padding:7px 12px; font-size:0.75rem; flex-shrink:0; }
+    .cards { grid-template-columns:1fr 1fr; gap:8px; margin-bottom:20px; }
+    .card { padding:10px 12px; }
+    .card-value { font-size:1.15rem; }
+    .chart-wrap { padding:12px; margin-bottom:16px; border-radius:10px; }
+    .chart-inner { height:260px; }
+    .section-title { font-size:0.95rem; margin:20px 0 12px 0; }
+    .grid-2 { gap:16px; }
+    .bill-item { padding:10px 12px; gap:10px; }
+    .meter-card { padding:12px; }
+    .meter-value-big { font-size:1.15rem; }
+  }
   .table-wrap { background:var(--surface); border:1px solid var(--border); border-radius:12px; overflow:hidden; margin-bottom:28px; max-height:600px; overflow-y:auto; }
   table { width:100%; border-collapse:collapse; font-size:0.83rem; }
   thead tr { background:#0f1117; position:sticky; top:0; z-index:1; }
@@ -303,6 +209,33 @@ _TEMPLATE_TOP = r"""<!DOCTYPE html>
   .section-title { font-size:1.1rem; font-weight:600; margin:32px 0 16px 0; color:var(--text); border-bottom:1px solid var(--border); padding-bottom:8px; }
   .sticky-filters { position:sticky; top:0; z-index:10; background:var(--bg); padding:12px 0 4px 0; margin:0 -24px; padding-left:24px; padding-right:24px; border-bottom:1px solid var(--border); margin-bottom:20px; }
   .filter-label { font-size:0.68rem; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin-bottom:4px; }
+  .card-change { font-size:0.75rem; font-weight:600; margin-top:4px; }
+  .card-change.up { color:var(--up); }
+  .card-change.down { color:var(--down); }
+  .bill-item { display:flex; align-items:center; gap:12px; padding:12px 14px; background:var(--surface); border:1px solid var(--border); border-radius:10px; margin-bottom:6px; cursor:pointer; transition:background .15s; }
+  .bill-item:hover { background:#222531; }
+  .bill-icon { width:36px; height:36px; border-radius:10px; display:flex; align-items:center; justify-content:center; font-size:18px; flex-shrink:0; }
+  .bill-info { flex:1; min-width:0; }
+  .bill-info .name { font-size:0.82rem; font-weight:600; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .bill-info .date { font-size:0.72rem; color:var(--muted); margin-top:2px; }
+  .bill-amount-col { text-align:right; flex-shrink:0; }
+  .bill-amount-col .eur { font-size:0.9rem; font-weight:700; color:var(--text); }
+  .bill-amount-col .pdf-link { font-size:0.7rem; color:#6366f1; margin-top:2px; text-decoration:none; display:block; }
+  .bill-amount-col .pdf-link:hover { text-decoration:underline; }
+  .bill-month-header { font-size:0.75rem; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin:16px 0 8px 0; }
+  .bill-month-header:first-child { margin-top:4px; }
+  .bills-list-wrap { max-height:600px; overflow-y:auto; }
+  .bills-list-wrap::-webkit-scrollbar { width:4px; }
+  .bills-list-wrap::-webkit-scrollbar-thumb { background:var(--border); border-radius:4px; }
+  .meter-card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:10px; }
+  .meter-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  .meter-title { font-size:0.9rem; font-weight:600; color:var(--text); }
+  .meter-value-big { font-size:1.4rem; font-weight:700; color:var(--text); }
+  .meter-unit { font-size:0.8rem; color:var(--muted); }
+  .meter-date { font-size:0.72rem; color:var(--muted); margin-top:2px; }
+  .meter-delta { font-size:0.75rem; font-weight:600; margin-top:2px; }
+  .meter-delta.up { color:var(--up); }
+  .meter-delta.down { color:var(--down); }
 </style>
 </head>
 <body>
@@ -322,8 +255,16 @@ _TEMPLATE_TOP = r"""<!DOCTYPE html>
   <div class="chart-scroll" id="costScroll"><div class="chart-inner" id="costInner"><canvas id="chart"></canvas></div></div>
 </div>
 <div class="chart-wrap">
-  <div class="chart-title">Unit Cost: Electricity, Gas, Water & Pellets</div>
-  <div class="chart-scroll" id="unitScroll"><div class="chart-inner" id="unitInner"><canvas id="unitCostChart"></canvas></div></div>
+  <div class="chart-title">Unit Cost (per kWh / m³, incl. network &amp; VAT)</div>
+  <div class="grid-3" style="margin-bottom:0">
+    <div><div style="height:200px"><canvas id="unitElecChart"></canvas></div></div>
+    <div><div style="height:200px"><canvas id="unitWaterChart"></canvas></div></div>
+    <div><div style="height:200px"><canvas id="unitPelletsChart"></canvas></div></div>
+  </div>
+  <div class="grid-2" style="margin-top:16px;margin-bottom:0">
+    <div><div style="height:200px"><canvas id="unitGasKwhChart"></canvas></div></div>
+    <div><div style="height:200px"><canvas id="unitGasM3Chart"></canvas></div></div>
+  </div>
 </div>
 
 <div class="grid-2">
@@ -350,7 +291,11 @@ _TEMPLATE_TOP = r"""<!DOCTYPE html>
 
 <div class="chart-wrap">
   <div class="chart-title">Consumption Trends (Usage, not Cost)</div>
-  <div class="chart-scroll"><div class="chart-inner"><canvas id="consumptionChart"></canvas></div></div>
+  <div class="grid-2" style="margin-bottom:0">
+    <div><div style="height:200px"><canvas id="consElecChart"></canvas></div></div>
+    <div><div style="height:200px"><canvas id="consWaterChart"></canvas></div></div>
+  </div>
+  <div style="height:200px;margin-top:16px"><canvas id="consGasChart"></canvas></div>
 </div>
 
 <div class="chart-wrap">
@@ -358,13 +303,22 @@ _TEMPLATE_TOP = r"""<!DOCTYPE html>
   <div class="chart-scroll"><div style="height:350px"><canvas id="forecastChart"></canvas></div></div>
 </div>
 
+<div class="section-title">Meter Readings</div>
+<div id="meterCards"></div>
 <div class="chart-wrap">
-  <div class="chart-title">Bill Details</div>
-  <div class="table-wrap" style="background:transparent;border:none;border-radius:0;">
-    <table><thead><tr><th>Category</th><th>Month</th><th class="amount">Amount (EUR)</th></tr></thead>
-    <tbody id="tableBody"></tbody></table>
+  <div class="chart-title">Meter History</div>
+  <div class="grid-2" style="margin-bottom:0">
+    <div><div style="height:200px"><canvas id="meterElecChart"></canvas></div></div>
+    <div><div style="height:200px"><canvas id="meterWaterChart"></canvas></div></div>
   </div>
+  <div style="height:200px;margin-top:16px"><canvas id="meterGasChart"></canvas></div>
 </div>
+
+<div class="section-title">Bills by Month</div>
+<div class="chart-wrap">
+  <div class="bills-list-wrap" id="billsList"></div>
+</div>
+
 <script>
 """
 
@@ -381,15 +335,24 @@ function fm(){return months.filter(m=>activeYears.has(m.slice(0,4))&&activeMonth
 function fmtMonth(m){const[y,mo]=m.split('-');return['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+mo]+" '"+y.slice(2);}
 
 function updateCards(){
-  const _fm=fm();const latestMonth=_fm[_fm.length-1]||months[months.length-1],last12=_fm.slice(-12);
+  const _fm=fm();
+  // Latest Month + rolling avg use only fully-completed months (exclude
+  // forward-allocated prepaid entries so they don't show partial-month spend).
+  const _fmComplete=_fm.filter(m=>m<CUTOFF_YM);
+  const latestMonth=_fmComplete[_fmComplete.length-1]||_fm[_fm.length-1]||months[months.length-1];
+  const last12=_fmComplete.slice(-12);
   let grandTotal=0,latestTotal=0,sum12=0;
   vendors.filter(v=>active.has(v)).forEach(v=>{_fm.forEach(m=>grandTotal+=(data[v]||{})[m]||0);latestTotal+=(data[v]||{})[latestMonth]||0;last12.forEach(m=>sum12+=(data[v]||{})[m]||0);});
+  let prevTotal=0,changeHtml='';
+  const prevMonth=_fmComplete.length>=2?_fmComplete[_fmComplete.length-2]:null;
+  if(prevMonth){vendors.filter(v=>active.has(v)).forEach(v=>prevTotal+=(data[v]||{})[prevMonth]||0);
+    if(prevTotal>0){const pct=((latestTotal-prevTotal)/prevTotal*100);const isUp=pct>0;changeHtml=`<div class="card-change ${isUp?'up':'down'}">${isUp?'\u25b2':'\u25bc'} ${Math.abs(pct).toFixed(1)}% vs ${fmtMonth(prevMonth)}</div>`;}}
   const topV=vendors.filter(v=>active.has(v)).map(v=>[v,_fm.reduce((s,m)=>s+((data[v]||{})[m]||0),0)]).sort((a,b)=>b[1]-a[1])[0]||['\u2014',0];
   const n12=Math.min(12,last12.length||1);
-  const cards=[{l:'Latest Month',v:'\u20ac'+latestTotal.toFixed(2),s:fmtMonth(latestMonth)},{l:'Monthly Avg',v:'\u20ac'+(sum12/n12).toFixed(2),s:'last '+n12+' months'},{l:'Total',v:'\u20ac'+grandTotal.toFixed(0),s:_fm.length+' months'},{l:'Top Category',v:iLabel(topV[0]),s:'\u20ac'+topV[1].toFixed(0)+' total'}];
+  const cards=[{l:'Latest Month',v:'\u20ac'+latestTotal.toFixed(2),s:fmtMonth(latestMonth),extra:changeHtml},{l:'Monthly Avg',v:'\u20ac'+(sum12/n12).toFixed(2),s:'last '+n12+' months'},{l:'Total',v:'\u20ac'+grandTotal.toFixed(0),s:_fm.length+' months'},{l:'Top Category',v:iLabel(topV[0]),s:'\u20ac'+topV[1].toFixed(0)+' total'}];
   const el=document.getElementById('summaryCards');
   el.innerHTML='';
-  cards.forEach(c=>{el.insertAdjacentHTML('beforeend',`<div class="card"><div class="card-label">${c.l}</div><div class="card-value">${c.v}</div><div class="card-sub">${c.s}</div></div>`);});
+  cards.forEach(c=>{el.insertAdjacentHTML('beforeend',`<div class="card"><div class="card-label">${c.l}</div><div class="card-value">${c.v}</div><div class="card-sub">${c.s}</div>${c.extra||''}</div>`);});
 }
 function _makeToggleChip(label,isAll,color,onAll,onNone){
   const chip=document.createElement('div');chip.className='chip'+(isAll?' active':'');
@@ -418,7 +381,7 @@ function buildMonthFilters(){
     c.appendChild(chip);
   });
 }
-function rebuildAll(){const _fm2=fm();const w=Math.max(window.innerWidth-80,_fm2.length*50);document.getElementById('costInner').style.minWidth=w+'px';document.getElementById('unitInner').style.minWidth=w+'px';chart.data=chartData();chart.update();updateCards();buildTable();buildUnitCostChart();buildPieChart();buildYoY();buildMoMChart();buildCategoryCards();buildConsumptionChart();buildForecastChart();}
+function rebuildAll(){const _fm2=fm();const w=Math.max(window.innerWidth-80,_fm2.length*50);document.getElementById('costInner').style.minWidth=w+'px';chart.data=chartData();chart.update();updateCards();buildUnitCostChart();buildPieChart();buildYoY();buildMoMChart();buildCategoryCards();buildConsumptionChart();buildForecastChart();buildBillsList();buildMeterReadings();}
 function buildFilters(){
   function makeChips(container){
     const allActive=vendors.every(v=>active.has(v));
@@ -442,21 +405,18 @@ function syncChips(){
 }
 function chartData(){const _fm=fm();return{labels:_fm.map(fmtMonth),datasets:vendors.filter(v=>active.has(v)).map(v=>({label:v,_vendor:v,data:_fm.map(m=>(data[v]||{})[m]||0),backgroundColor:COLORS[v]||'#888',borderRadius:2}))};}
 const barIconPlugin={id:'barIcons',afterDatasetsDraw(ch){const{ctx}=ch;ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';ch.data.datasets.forEach((ds,di)=>{const meta=ch.getDatasetMeta(di);if(meta.hidden)return;const vk=ds._vendor||ds.label;const icon=ICONS[vk];if(!icon)return;meta.data.forEach((bar,i)=>{const h=Math.abs(bar.base-bar.y);if(h<18)return;const sz=Math.min(14,h-4);ctx.font=sz+'px sans-serif';ctx.fillText(icon,bar.x,(bar.y+bar.base)/2);});});ctx.restore();}};
-let chart,unitChart,pieChart,consumptionChartObj,forecastChartObj,momChartObj;
+let chart,pieChart,forecastChartObj,momChartObj;
 function buildChart(){
   const _fm2=fm();const w=Math.max(window.innerWidth-80,_fm2.length*50);
   document.getElementById('costInner').style.minWidth=w+'px';
-  document.getElementById('unitInner').style.minWidth=w+'px';
-  const totalPlugin={id:'barTotals',afterDraw(ch){const{ctx}=ch;ctx.save();ctx.font='bold 10px sans-serif';ctx.fillStyle='#94a3b8';ctx.textAlign='center';const meta=ch.getDatasetMeta(0);if(!meta||!meta.data)return;const nIdx=meta.data.length;for(let i=0;i<nIdx;i++){let sum=0;ch.data.datasets.forEach(ds=>{sum+=(ds.data[i]||0);});if(sum<=0)continue;const xPos=meta.data[i].x;let yPos=1e9;ch.data.datasets.forEach((_,di)=>{const m2=ch.getDatasetMeta(di);if(m2.hidden)return;const bar=m2.data[i];if(bar&&bar.y<yPos)yPos=bar.y;});ctx.fillText('\u20ac'+Math.round(sum),xPos,yPos-5);}ctx.restore();}};
+  const totalPlugin={id:'barTotals',afterDatasetsDraw(ch){const{ctx}=ch;ctx.save();ctx.font='bold 10px sans-serif';ctx.fillStyle='#94a3b8';ctx.textAlign='center';const meta=ch.getDatasetMeta(0);if(!meta||!meta.data)return;const nIdx=meta.data.length;for(let i=0;i<nIdx;i++){let sum=0;ch.data.datasets.forEach(ds=>{sum+=(ds.data[i]||0);});if(sum<=0)continue;const xPos=meta.data[i].x;let yPos=1e9;ch.data.datasets.forEach((_,di)=>{const m2=ch.getDatasetMeta(di);if(m2.hidden)return;const bar=m2.data[i];if(bar&&bar.y<yPos)yPos=bar.y;});ctx.fillText('\u20ac'+Math.round(sum),xPos,yPos-5);}ctx.restore();}};
   chart=new Chart(document.getElementById('chart').getContext('2d'),{type:'bar',data:chartData(),plugins:[totalPlugin,barIconPlugin],options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{mode:'index',callbacks:{label:c=>`${iLabel(c.dataset.label)}: \u20ac${c.parsed.y.toFixed(2)}`,footer:items=>`Total: \u20ac${items.reduce((a,b)=>a+b.parsed.y,0).toFixed(2)}`}}},scales:{x:{stacked:true,grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',font:{size:11}}},y:{stacked:true,grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',callback:v=>'\u20ac'+v}}}}});
 }
-function syncScrolls(){
-  const s1=document.getElementById('costScroll'),s2=document.getElementById('unitScroll');let syncing=false;
-  s1.addEventListener('scroll',()=>{if(!syncing){syncing=true;s2.scrollLeft=s1.scrollLeft;syncing=false;}});
-  s2.addEventListener('scroll',()=>{if(!syncing){syncing=true;s1.scrollLeft=s2.scrollLeft;syncing=false;}});
-}
+function syncScrolls(){/* unitScroll removed in chart split; cost scroll is standalone */}
+let unitElecChart,unitWaterChart,unitPelletsChart,unitGasKwhChart,unitGasM3Chart;
 function buildUnitCostChart(){
-  if(unitChart){unitChart.destroy();unitChart=null;}
+  [unitElecChart,unitWaterChart,unitPelletsChart,unitGasKwhChart,unitGasM3Chart].forEach(c=>{if(c)c.destroy();});
+  unitElecChart=unitWaterChart=unitPelletsChart=unitGasKwhChart=unitGasM3Chart=null;
   const elecRows=[],gasKwhRows=[],gasM3Rows=[],waterM3Rows=[],pelletRows=[];
   const _fm=fm();_fm.forEach(m=>{
     const elecEur=((data.electricity||{})[m]||0)+(ELEC_NET_BY_SVC[m]||0);
@@ -472,13 +432,25 @@ function buildUnitCostChart(){
     waterM3Rows.push(wM3?(waterEur/wM3):null);
     pelletRows.push(hasPellet?PELLET_S_KWH:null);
   });
-  unitChart=new Chart(document.getElementById('unitCostChart').getContext('2d'),{type:'line',data:{labels:_fm.map(fmtMonth),datasets:[
-    {label:'Electricity s/kWh',data:elecRows,borderColor:'#f59e0b',backgroundColor:'rgba(245,158,11,.15)',fill:true,tension:0.3,pointRadius:4,yAxisID:'y'},
-    {label:'Gas s/kWh',data:gasKwhRows,borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,.15)',fill:true,tension:0.3,pointRadius:4,yAxisID:'y'},
-    {label:'Gas s/m\u00b3',data:gasM3Rows,borderColor:'#93c5fd',backgroundColor:'rgba(147,197,253,.15)',fill:false,tension:0.3,pointRadius:4,borderDash:[5,3],yAxisID:'y'},
-    {label:'Water \u20ac/m\u00b3',data:waterM3Rows,borderColor:'#06b6d4',backgroundColor:'rgba(6,182,212,.15)',fill:false,tension:0.3,pointRadius:4,borderDash:[5,3],yAxisID:'y2'},
-    {label:'Pellets s/kWh',data:pelletRows,borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,.15)',fill:false,tension:0,pointRadius:4,borderDash:[8,4],yAxisID:'y'},
-  ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#94a3b8',font:{size:12}}},tooltip:{callbacks:{label:c=>{const v=c.parsed.y;if(v==null)return c.dataset.label+': \u2014';if(c.dataset.label.startsWith('Water'))return c.dataset.label+': \u20ac'+v.toFixed(2);return c.dataset.label+': '+v.toFixed(2);}}}},scales:{x:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',font:{size:11}}},y:{position:'left',grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',callback:v=>v+' s'},title:{display:true,text:'cents',color:'#64748b'}},y2:{position:'right',grid:{drawOnChartArea:false},ticks:{color:'#06b6d4',stepSize:0.05,callback:v=>'\u20ac'+v.toFixed(2)},title:{display:true,text:'\u20ac/m\u00b3',color:'#06b6d4'}}}}});
+  const labels=_fm.map(fmtMonth);
+  const mkOpts=(title,unit,fmt)=>({responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},title:{display:true,text:title,color:'#94a3b8',font:{size:12,weight:'600'}},tooltip:{callbacks:{label:c=>c.parsed.y==null?'\u2014':fmt(c.parsed.y)}}},scales:{x:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',font:{size:11}}},y:{ticks:{color:'#94a3b8',callback:unit},grid:{color:'rgba(255,255,255,.05)'}}}});
+  const fmtSents=v=>v.toFixed(2)+' s';const fmtEur=v=>'\u20ac'+v.toFixed(2);
+  const sentsAxis=v=>v+' s';const eurAxis=v=>'\u20ac'+v.toFixed(2);
+  unitElecChart=new Chart(document.getElementById('unitElecChart').getContext('2d'),{type:'line',data:{labels,datasets:[
+    {label:'Electricity s/kWh',data:elecRows,borderColor:'#f59e0b',backgroundColor:'rgba(245,158,11,.15)',fill:true,tension:0.3,pointRadius:3},
+  ]},options:mkOpts('\u26a1 Electricity (s/kWh)',sentsAxis,fmtSents)});
+  unitWaterChart=new Chart(document.getElementById('unitWaterChart').getContext('2d'),{type:'line',data:{labels,datasets:[
+    {label:'Water \u20ac/m\u00b3',data:waterM3Rows,borderColor:'#06b6d4',backgroundColor:'rgba(6,182,212,.15)',fill:true,tension:0.3,pointRadius:3},
+  ]},options:{...mkOpts('💧 Water (\u20ac/m\u00b3)',eurAxis,fmtEur),scales:{x:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',font:{size:11}}},y:{suggestedMin:0,suggestedMax:6,ticks:{color:'#94a3b8',callback:eurAxis},grid:{color:'rgba(255,255,255,.05)'}}}}});
+  unitPelletsChart=new Chart(document.getElementById('unitPelletsChart').getContext('2d'),{type:'line',data:{labels,datasets:[
+    {label:'Pellets s/kWh',data:pelletRows,borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,.15)',fill:true,tension:0,pointRadius:3,borderDash:[6,3]},
+  ]},options:mkOpts('🪵 Pellets (s/kWh, season avg)',sentsAxis,fmtSents)});
+  unitGasKwhChart=new Chart(document.getElementById('unitGasKwhChart').getContext('2d'),{type:'line',data:{labels,datasets:[
+    {label:'Gas s/kWh',data:gasKwhRows,borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,.15)',fill:true,tension:0.3,pointRadius:3},
+  ]},options:mkOpts('🔥 Gas (s/kWh)',sentsAxis,fmtSents)});
+  unitGasM3Chart=new Chart(document.getElementById('unitGasM3Chart').getContext('2d'),{type:'line',data:{labels,datasets:[
+    {label:'Gas s/m\u00b3',data:gasM3Rows,borderColor:'#93c5fd',backgroundColor:'rgba(147,197,253,.15)',fill:true,tension:0.3,pointRadius:3},
+  ]},options:mkOpts('🔥 Gas (s/m\u00b3)',sentsAxis,fmtSents)});
 }
 
 /* ── Pie Chart: Spending by Category ── */
@@ -487,10 +459,11 @@ function buildPieChart(){
   const _fm=fm();
   const totals=vendors.filter(v=>active.has(v)).map(v=>{let s=0;_fm.forEach(m=>s+=(data[v]||{})[m]||0);return{v,s};}).filter(x=>x.s>0).sort((a,b)=>b.s-a.s);
   const pieIconPlugin={id:'pieIcons',afterDraw(ch){const{ctx}=ch;const meta=ch.getDatasetMeta(0);if(!meta||!meta.data)return;ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';meta.data.forEach((arc,i)=>{const v=totals[i].v;const icon=ICONS[v];if(!icon)return;const angle=(arc.startAngle+arc.endAngle)/2;const r=(arc.innerRadius+arc.outerRadius)/2;const x=arc.x+Math.cos(angle)*r;const y=arc.y+Math.sin(angle)*r;const span=arc.endAngle-arc.startAngle;if(span<0.3)return;const sz=Math.min(16,span*20);ctx.font=sz+'px sans-serif';ctx.fillText(icon,x,y);});ctx.restore();}};
+  const pieCenterPlugin={id:'pieCenter',afterDraw(ch){const grandTotal=ch.data.datasets[0].data.reduce((a,b)=>a+b,0);const{ctx,chartArea:{left,right,top,bottom}}=ch;const cx=(left+right)/2;const cy=(top+bottom)/2;ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';ctx.font='bold 18px system-ui,sans-serif';ctx.fillStyle='#e2e8f0';ctx.fillText('\u20ac'+Math.round(grandTotal),cx,cy-8);ctx.font='11px system-ui,sans-serif';ctx.fillStyle='#64748b';ctx.fillText('total',cx,cy+10);ctx.restore();}};
   pieChart=new Chart(document.getElementById('pieChart').getContext('2d'),{type:'doughnut',data:{
     labels:totals.map(t=>iLabel(t.v)),
     datasets:[{data:totals.map(t=>Math.round(t.s*100)/100),backgroundColor:totals.map(t=>COLORS[t.v]||'#888'),borderWidth:0}]
-  },plugins:[pieIconPlugin],options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right',labels:{color:'#94a3b8',padding:10,font:{size:11}}},tooltip:{callbacks:{label:c=>{const total=c.dataset.data.reduce((a,b)=>a+b,0);return iLabel(totals[c.dataIndex].v)+': \u20ac'+c.parsed.toFixed(2)+' ('+(c.parsed/total*100).toFixed(1)+'%)';}}}}}});
+  },plugins:[pieIconPlugin,pieCenterPlugin],options:{responsive:true,maintainAspectRatio:false,cutout:'55%',plugins:{legend:{position:'right',labels:{color:'#94a3b8',padding:10,font:{size:11}}},tooltip:{callbacks:{label:c=>{const total=c.dataset.data.reduce((a,b)=>a+b,0);return iLabel(totals[c.dataIndex].v)+': \u20ac'+c.parsed.toFixed(2)+' ('+(c.parsed/total*100).toFixed(1)+'%)';}}}}}});
 }
 
 /* ── Year-over-Year Table ── */
@@ -544,37 +517,51 @@ function buildCategoryCards(){
 }
 
 /* ── Consumption Trends (usage, not cost) ── */
+let consElecChart,consGasChart,consWaterChart;
 function buildConsumptionChart(){
-  if(consumptionChartObj){consumptionChartObj.destroy();consumptionChartObj=null;}
+  [consElecChart,consGasChart,consWaterChart].forEach(c=>{if(c)c.destroy();});
+  consElecChart=consGasChart=consWaterChart=null;
   const _fm=fm();
-  const eKwh=[],gM3=[],wM3=[],pKg=[];
+  const eKwh=[],gM3=[],wM3=[];
   _fm.forEach(m=>{
     eKwh.push(CONSUMPTION.elec_kwh[m]||null);
     gM3.push(CONSUMPTION.gas_m3[m]||null);
     wM3.push(CONSUMPTION.water_m3[m]||null);
-    /* pellet kg: reverse from EUR spread. Use season data if available */
-    pKg.push(null); /* pellet consumption is seasonal lump, skip monthly */
   });
-  consumptionChartObj=new Chart(document.getElementById('consumptionChart').getContext('2d'),{type:'line',data:{labels:_fm.map(fmtMonth),datasets:[
-    {label:'Electricity (kWh)',data:eKwh,borderColor:'#f59e0b',backgroundColor:'rgba(245,158,11,.1)',fill:true,tension:0.3,pointRadius:3,yAxisID:'y'},
-    {label:'Gas (m\u00b3)',data:gM3,borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,.1)',fill:true,tension:0.3,pointRadius:3,yAxisID:'y'},
-    {label:'Water (m\u00b3)',data:wM3,borderColor:'#06b6d4',backgroundColor:'rgba(6,182,212,.1)',fill:false,tension:0.3,pointRadius:3,yAxisID:'y2'},
-  ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#94a3b8',font:{size:12}}},tooltip:{callbacks:{label:c=>{const v=c.parsed.y;if(v==null)return c.dataset.label+': \u2014';return c.dataset.label+': '+v.toFixed(1);}}}},scales:{x:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',font:{size:11}}},y:{position:'left',grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8'},title:{display:true,text:'kWh / m\u00b3 (gas)',color:'#64748b'}},y2:{position:'right',grid:{drawOnChartArea:false},ticks:{color:'#06b6d4'},title:{display:true,text:'m\u00b3 (water)',color:'#06b6d4'}}}}});
+  const labels=_fm.map(fmtMonth);
+  const baseScales={x:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',font:{size:11}}}};
+  const baseOpts={responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#94a3b8',font:{size:11}}},title:{display:true,color:'#94a3b8',font:{size:12,weight:'600'}}}};
+  consElecChart=new Chart(document.getElementById('consElecChart').getContext('2d'),{type:'line',data:{labels,datasets:[
+    {label:'Electricity (kWh)',data:eKwh,borderColor:'#f59e0b',backgroundColor:'rgba(245,158,11,.15)',fill:true,tension:0.3,pointRadius:3},
+  ]},options:{...baseOpts,plugins:{...baseOpts.plugins,title:{...baseOpts.plugins.title,text:'\u26a1 Electricity (kWh)'},tooltip:{callbacks:{label:c=>c.parsed.y==null?c.dataset.label+': \u2014':c.dataset.label+': '+c.parsed.y.toFixed(1)}}},scales:{...baseScales,y:{ticks:{color:'#94a3b8',callback:v=>v+' kWh'},grid:{color:'rgba(255,255,255,.05)'}}}}});
+  consWaterChart=new Chart(document.getElementById('consWaterChart').getContext('2d'),{type:'line',data:{labels,datasets:[
+    {label:'Water (m\u00b3)',data:wM3,borderColor:'#06b6d4',backgroundColor:'rgba(6,182,212,.15)',fill:true,tension:0.3,pointRadius:3},
+  ]},options:{...baseOpts,plugins:{...baseOpts.plugins,title:{...baseOpts.plugins.title,text:'💧 Water (m\u00b3)'},tooltip:{callbacks:{label:c=>c.parsed.y==null?c.dataset.label+': \u2014':c.dataset.label+': '+c.parsed.y.toFixed(2)}}},scales:{...baseScales,y:{ticks:{color:'#94a3b8',callback:v=>v+' m\u00b3'},grid:{color:'rgba(255,255,255,.05)'}}}}});
+  consGasChart=new Chart(document.getElementById('consGasChart').getContext('2d'),{type:'line',data:{labels,datasets:[
+    {label:'Gas (m\u00b3)',data:gM3,borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,.15)',fill:true,tension:0.3,pointRadius:3},
+  ]},options:{...baseOpts,plugins:{...baseOpts.plugins,title:{...baseOpts.plugins.title,text:'🔥 Gas (m\u00b3)'},tooltip:{callbacks:{label:c=>c.parsed.y==null?c.dataset.label+': \u2014':c.dataset.label+': '+c.parsed.y.toFixed(1)}}},scales:{...baseScales,y:{ticks:{color:'#94a3b8',callback:v=>v+' m\u00b3'},grid:{color:'rgba(255,255,255,.05)'}}}}});
 }
 
 /* ── Budget Forecast ── */
 function buildForecastChart(){
   if(forecastChartObj){forecastChartObj.destroy();forecastChartObj=null;}
   const _fm=fm();if(_fm.length<3)return;
+  /* Clamp to last fully-completed month — prepaid bills (e.g. annual insurance) leak
+     forward-allocated entries into future service months; treating those as "actual"
+     drags the rolling average and offsets the forecast horizon. */
+  const _now=new Date();
+  const _cutoff=`${_now.getFullYear()}-${String(_now.getMonth()+1).padStart(2,'0')}`;
+  const completed=_fm.filter(m=>m<_cutoff);
+  if(completed.length<3)return;
   /* Calculate monthly totals */
-  const monthlyTotals=_fm.map(m=>{let s=0;vendors.filter(v=>active.has(v)).forEach(v=>s+=(data[v]||{})[m]||0);return s;});
+  const monthlyTotals=completed.map(m=>{let s=0;vendors.filter(v=>active.has(v)).forEach(v=>s+=(data[v]||{})[m]||0);return s;});
   /* Rolling 6-month average for forecast */
   const window6=Math.min(6,monthlyTotals.length);
   const recent=monthlyTotals.slice(-window6);
   const avg=recent.reduce((a,b)=>a+b,0)/window6;
   const stdDev=Math.sqrt(recent.reduce((a,b)=>a+(b-avg)**2,0)/window6);
-  /* Generate 3 forecast months */
-  const lastMonth=_fm[_fm.length-1];
+  /* Generate 3 forecast months starting from the cutoff month (current month) */
+  const lastMonth=completed[completed.length-1];
   const [ly,lm]=[parseInt(lastMonth.slice(0,4)),parseInt(lastMonth.slice(5,7))];
   const forecastMonths=[];const forecastLabels=[];
   for(let i=1;i<=3;i++){
@@ -582,7 +569,7 @@ function buildForecastChart(){
     forecastMonths.push(`${fy}-${String(fmo).padStart(2,'0')}`);
     forecastLabels.push(fmtMonth(`${fy}-${String(fmo).padStart(2,'0')}`));
   }
-  const allLabels=_fm.slice(-12).map(fmtMonth).concat(forecastLabels);
+  const allLabels=completed.slice(-12).map(fmtMonth).concat(forecastLabels);
   const actualData=monthlyTotals.slice(-12);
   const forecastData=new Array(actualData.length).fill(null).concat([avg,avg,avg]);
   const upperBand=new Array(actualData.length).fill(null).concat([avg+stdDev,avg+stdDev,avg+stdDev]);
@@ -599,22 +586,58 @@ function buildForecastChart(){
   ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#94a3b8',font:{size:11}}},tooltip:{callbacks:{label:c=>{const v=c.parsed.y;if(v==null)return '';return c.dataset.label+': \u20ac'+v.toFixed(0);}}}},scales:{x:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',font:{size:11}}},y:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',callback:v=>'\u20ac'+v}}}}});
 }
 
-function buildTable(){
-  const _fm=fm();const last36=_fm.slice(-36);
-  const last36Set=new Set(last36);
+/* ── Bills by Month (card-style list) ── */
+function buildBillsList(){
+  const _fm=fm();const last36=_fm.slice(-36);const last36Set=new Set(last36);
   const rows=BILL_FILES.filter(r=>last36Set.has(r.m)&&active.has(r.v));
-  rows.sort((a,b)=>b.m.localeCompare(a.m)||a.v.localeCompare(b.v));
-  document.getElementById('tableBody').innerHTML=rows.map(r=>{
-    const label=iLabel(r.v);
-    const dot=`<span class="dot" style="background:${COLORS[r.v]||'#888'};margin-right:8px"></span>`;
-    const amt='\u20ac'+r.a.toFixed(2);
-    if(r.f && BASE_URL){
-      const url=BASE_URL+'/bills/'+encodeURIComponent(r.f);
-      return `<tr style="cursor:pointer" onclick="window.open('${url}','_blank')"><td>${dot}${label}</td><td>${r.m}</td><td class="amount"><a href="${url}" target="_blank" style="color:#e2e8f0;text-decoration:none">${amt} &#128279;</a></td></tr>`;
-    }
-    return `<tr><td>${dot}${label}</td><td>${r.m}</td><td class="amount">${amt}</td></tr>`;
-  }).join('');
+  rows.sort((a,b)=>b.m.localeCompare(a.m)||b.a-a.a);
+  const el=document.getElementById('billsList');el.innerHTML='';
+  let curMonth='';
+  rows.forEach(r=>{
+    if(r.m!==curMonth){curMonth=r.m;el.insertAdjacentHTML('beforeend',`<div class="bill-month-header">${fmtMonth(r.m)}</div>`);}
+    const icon=ICONS[r.v]||'';const color=COLORS[r.v]||'#888';const label=LABELS[r.v]||r.v;
+    const _tok=(window.__DT)||new URLSearchParams(location.search).get('token')||'';const _q=_tok?`?token=${encodeURIComponent(_tok)}`:'';const pdfHtml=(r.f&&BASE_URL)?`<a class="pdf-link" href="${BASE_URL}/bills/${encodeURIComponent(r.f)}${_q}" target="_blank">📄 PDF</a>`:'';
+    el.insertAdjacentHTML('beforeend',`<div class="bill-item"><div class="bill-icon" style="background:${color}22">${icon}</div><div class="bill-info"><div class="name">${label}</div><div class="date">${r.m}</div></div><div class="bill-amount-col"><div class="eur">\u20ac${r.a.toFixed(2)}</div>${pdfHtml}</div></div>`);
+  });
 }
-buildYearFilters();buildMonthFilters();updateCards();buildFilters();buildChart();buildUnitCostChart();syncScrolls();buildTable();buildPieChart();buildYoY();buildMoMChart();buildCategoryCards();buildConsumptionChart();buildForecastChart();
+
+/* ── Meter Readings (cards + sparklines) ── */
+let meterElecChart,meterGasChart,meterWaterChart;
+function buildMeterReadings(){
+  const el=document.getElementById('meterCards');el.innerHTML='';
+  const _fm=fm();
+  const types=[
+    {key:'elec_kwh',label:'Electricity',icon:'\u26a1',color:'#f59e0b',unit:'kWh',chartId:'meterElecChart'},
+    {key:'gas_m3',label:'Gas',icon:'\uD83D\uDD25',color:'#3b82f6',unit:'m\u00b3',chartId:'meterGasChart'},
+    {key:'water_m3',label:'Water',icon:'\uD83D\uDCA7',color:'#06b6d4',unit:'m\u00b3',chartId:'meterWaterChart'},
+  ];
+  types.forEach(t=>{
+    const cdata=CONSUMPTION[t.key]||{};
+    const mths=_fm.filter(m=>cdata[m]!=null);
+    if(mths.length===0)return;
+    const lastM=mths[mths.length-1];const prevM=mths.length>=2?mths[mths.length-2]:null;
+    const lastVal=cdata[lastM];const prevVal=prevM?cdata[prevM]:null;
+    let deltaHtml='';
+    if(prevVal!=null){const diff=lastVal-prevVal;const pct=prevVal>0?((diff/prevVal)*100):0;
+      const cls=diff>0?'up':'down';
+      deltaHtml=`<div class="meter-delta ${cls}">${diff>0?'\u25b2':'\u25bc'} ${Math.abs(diff).toFixed(1)} ${t.unit} (${Math.abs(pct).toFixed(1)}%) vs ${fmtMonth(prevM)}</div>`;}
+    el.insertAdjacentHTML('beforeend',`<div class="meter-card"><div class="meter-header"><div><div class="meter-title">${t.icon} ${t.label}</div><div class="meter-date">Latest: ${fmtMonth(lastM)}</div>${deltaHtml}</div><div style="text-align:right"><div class="meter-value-big">${lastVal.toFixed(1)}</div><div class="meter-unit">${t.unit} (month)</div></div></div></div>`);
+  });
+  /* Build sparkline charts */
+  [meterElecChart,meterGasChart,meterWaterChart].forEach(c=>{if(c){c.destroy();}});
+  meterElecChart=null;meterGasChart=null;meterWaterChart=null;
+  types.forEach(t=>{
+    const cdata=CONSUMPTION[t.key]||{};
+    const mths=_fm.filter(m=>cdata[m]!=null).slice(-12);
+    if(mths.length<2)return;
+    const canvas=document.getElementById(t.chartId);if(!canvas)return;
+    const ch=new Chart(canvas.getContext('2d'),{type:'line',data:{labels:mths.map(fmtMonth),datasets:[{label:t.label+' ('+t.unit+')',data:mths.map(m=>cdata[m]),borderColor:t.color,backgroundColor:t.color+'20',fill:true,tension:0.35,pointRadius:3,borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#94a3b8',font:{size:11}}}},scales:{x:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',font:{size:10}}},y:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',callback:v=>v+' '+t.unit}}}}});
+    if(t.chartId==='meterElecChart')meterElecChart=ch;
+    if(t.chartId==='meterGasChart')meterGasChart=ch;
+    if(t.chartId==='meterWaterChart')meterWaterChart=ch;
+  });
+}
+
+buildYearFilters();buildMonthFilters();updateCards();buildFilters();buildChart();buildUnitCostChart();syncScrolls();buildPieChart();buildYoY();buildMoMChart();buildCategoryCards();buildConsumptionChart();buildForecastChart();buildBillsList();buildMeterReadings();
 </script></body></html>
 """

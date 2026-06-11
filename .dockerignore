@@ -1,0 +1,10 @@
+# Whitelist: build contexts for api-server and bill-parser are the repo root
+# (so both can COPY shared/). Everything else must NOT reach the docker daemon
+# — especially raw PDFs and credentials.
+*
+!api-server/
+!bill-parser/
+!shared/
+api-server/__pycache__/
+bill-parser/__pycache__/
+shared/__pycache__/

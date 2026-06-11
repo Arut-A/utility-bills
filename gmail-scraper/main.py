@@ -78,6 +78,27 @@ def save_email_record(email_id, sender, subject, received_at, pdf_path):
             pass  # duplicate — safe to ignore
 
 # ── Bill-parser trigger ────────────────────────────────────────────────
+def trigger_classify(pdf_path: str) -> dict | None:
+    """POST the PDF path to bill-parser /classify — returns vendor_category without saving."""
+    import httpx
+    parser_url = os.environ.get("PARSER_SERVICE_URL", "http://bill-parser:8001")
+    api_key    = os.environ.get("API_SECRET_KEY", "")
+    try:
+        resp = httpx.post(
+            f"{parser_url}/classify",
+            json={"pdf_path": pdf_path},
+            headers={"X-API-Key": api_key},
+            timeout=30.0,
+        )
+        if resp.status_code == 200:
+            return resp.json()
+        log.warning("bill-parser /classify returned %d for %s: %s",
+                    resp.status_code, pdf_path, resp.text[:200])
+    except Exception as exc:
+        log.warning("bill-parser /classify call failed for %s: %s", pdf_path, exc)
+    return None
+
+
 def trigger_parse(pdf_path: str) -> dict | None:
     """POST the PDF path to bill-parser. Returns parsed result or None."""
     import httpx
@@ -188,7 +209,37 @@ def find_pdf_parts(payload):
     return parts
 
 # ── Core poll loop ────────────────────────────────────────────────────────────
+_TRANSIENT_NETWORK_ERROR_NAMES = (
+    "gaierror", "TransportError", "ServerNotFoundError",
+    "ConnectionError", "TimeoutError",
+)
+
+
+def _is_transient_network_error(exc: Exception) -> bool:
+    cls_chain = " ".join(c.__name__ for c in type(exc).__mro__)
+    return any(n in cls_chain for n in _TRANSIENT_NETWORK_ERROR_NAMES)
+
+
 def poll_gmail():
+    """Run a Gmail poll, retrying on transient network errors (DNS, connection)."""
+    max_attempts = 3
+    backoff_s = 3600  # 1 hour between attempts — gives transient DNS/network outages time to clear
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return _poll_gmail_attempt()
+        except Exception as exc:
+            if _is_transient_network_error(exc) and attempt < max_attempts:
+                log.warning(
+                    "Transient network error on Gmail poll attempt %d/%d: %s — retry in %ds",
+                    attempt, max_attempts, exc, backoff_s,
+                )
+                time.sleep(backoff_s)
+                continue
+            log.exception("Error during Gmail poll: %s", exc)
+            return
+
+
+def _poll_gmail_attempt():
     log.info("Polling Gmail...")
     try:
         service = get_gmail_service()
@@ -302,17 +353,39 @@ def poll_gmail():
         new_bills.extend(telia_results)
         new_count += len(telia_results)
 
+        # ── Process forwarded bills (Gate B — from BILLS_FORWARD_SENDER) ──
+        fwd_results, fwd_stats = _poll_forwarded_bills(service, bills_dir)
+        new_bills.extend(fwd_results)
+
         # ── Process insurance bills (Home insurance label) ────────────
         ins_results = _poll_insurance_bills(service, bills_dir, label_id)
         new_bills.extend(ins_results)
 
-        log.info("Poll complete: %d new bill(s)", new_count + len(ins_results))
+        log.info(
+            "Poll complete: %d new bill(s) — direct=%d, forwarded=%d (accepted=%d skipped=%d errors=%d), labelled=%d",
+            new_count + len(ins_results) + len(fwd_results),
+            new_count,
+            len(fwd_results),
+            fwd_stats["accepted"],
+            fwd_stats["skipped"],
+            fwd_stats["errors"],
+            len(ins_results),
+        )
+
+        # ── Forwarded-bill notifications (per-forward, not batched with others) ──
+        for note in fwd_stats.get("notifications", []):
+            try:
+                _send_telegram_text(note)
+            except Exception as exc:
+                log.warning("Telegram notification failed: %s", exc)
 
         # ── Send ONE summary + dashboard via Telegram ────────────────
         if new_bills:
             _send_telegram_summary(new_bills, bills_dir)
 
     except Exception as exc:
+        if _is_transient_network_error(exc):
+            raise
         log.exception("Error during Gmail poll: %s", exc)
 
 
@@ -492,6 +565,189 @@ def _poll_telia_no_pdf(service, label_id: str) -> list:
     return results
 
 
+def _poll_forwarded_bills(service, bills_dir: Path) -> tuple[list, dict]:
+    """Gate B — pick up bills forwarded from BILLS_FORWARD_SENDER.
+
+    Flow:
+      1. Query Gmail: forwarded messages from the configured sender, not yet triaged
+      2. For each PDF: download, call /classify (no DB write yet)
+      3. If any PDF classifies as house_insurance → /parse it, apply 'Home insurance' label
+      4. Else → delete the download(s), apply 'ForwardedSkipped' label, log and notify
+
+    Returns: (parsed_bills, stats_dict) where stats_dict has accepted/skipped/errors counts.
+    """
+    stats = {"accepted": 0, "skipped": 0, "errors": 0, "notifications": []}
+    fwd_sender = os.environ.get("BILLS_FORWARD_SENDER", "").strip()
+    if not fwd_sender:
+        return [], stats
+
+    # Ensure labels exist
+    ins_label_id = ensure_label(service, "Home insurance")
+    skipped_label_id = ensure_label(service, "ForwardedSkipped")
+
+    q = (
+        f'from:{fwd_sender} has:attachment '
+        f'(subject:Fwd OR subject:FW OR subject:TR) '
+        f'-label:"Home insurance" -label:ForwardedSkipped -label:Archieve'
+    )
+    log.info("Forward query: %s", q)
+
+    try:
+        result = service.users().messages().list(
+            userId="me", q=q, maxResults=20
+        ).execute()
+    except Exception as exc:
+        log.warning("Forward query failed: %s", exc)
+        stats["errors"] += 1
+        return [], stats
+
+    messages = result.get("messages", [])
+    if not messages:
+        return [], stats
+    log.info("Found %d forwarded candidate message(s)", len(messages))
+
+    results = []
+    for msg_stub in messages:
+        msg_id = msg_stub["id"]
+        if email_already_processed(msg_id):
+            continue
+
+        try:
+            msg = service.users().messages().get(
+                userId="me", id=msg_id, format="full"
+            ).execute()
+        except Exception as exc:
+            log.warning("Fetch forwarded msg %s failed: %s", msg_id, exc)
+            stats["errors"] += 1
+            continue
+
+        headers = {h["name"]: h["value"] for h in msg["payload"]["headers"]}
+        sender = headers.get("From", "")
+        subject = headers.get("Subject", "")
+        date_str = headers.get("Date", "")
+        try:
+            from email.utils import parsedate_to_datetime
+            received_at = parsedate_to_datetime(date_str).astimezone(timezone.utc).replace(tzinfo=None)
+        except Exception:
+            received_at = datetime.utcnow()
+
+        # Download every PDF attachment to a temp path for classification
+        downloaded = []  # list of (Path, filename_in_email)
+        for part in find_pdf_parts(msg["payload"]):
+            att_id = part["body"].get("attachmentId")
+            if not att_id:
+                continue
+            try:
+                att = service.users().messages().attachments().get(
+                    userId="me", messageId=msg_id, id=att_id
+                ).execute()
+                pdf_bytes = base64.urlsafe_b64decode(att["data"])
+            except Exception as exc:
+                log.warning("Attachment download failed for %s: %s", msg_id, exc)
+                stats["errors"] += 1
+                continue
+
+            raw_filename = part.get("filename") or "forwarded.pdf"
+            # Sanitize and prefix
+            safe_stem = sanitize_filename(Path(raw_filename).stem)[:80]
+            out_path = bills_dir / f"fwd_{msg_id[:12]}_{safe_stem}.pdf"
+            counter = 1
+            while out_path.exists():
+                out_path = bills_dir / f"fwd_{msg_id[:12]}_{safe_stem}_{counter}.pdf"
+                counter += 1
+            out_path.write_bytes(pdf_bytes)
+            downloaded.append((out_path, raw_filename))
+
+        if not downloaded:
+            log.info("Forwarded msg %s had no PDF parts — skipping", msg_id)
+            save_email_record(msg_id, sender, subject, received_at, None)
+            continue
+
+        # Classify each PDF; keep the first one that matches house_insurance
+        accepted_pdf = None
+        classify_details = []
+        for pdf_path, orig_name in downloaded:
+            cls = trigger_classify(str(pdf_path))
+            if not cls:
+                classify_details.append(f"{orig_name}: classify failed")
+                continue
+            vendor = cls.get("vendor_category") or "unknown"
+            req_m = cls.get("matched_require")
+            exc_m = cls.get("matched_exclude")
+            log.info("Forward PDF %s classified as '%s' (require=%s, exclude=%s)",
+                     orig_name, vendor, req_m, exc_m)
+            classify_details.append(
+                f"{orig_name}: vendor={vendor}"
+                + (f", require_match={req_m}" if req_m else "")
+                + (f", exclude_match={exc_m}" if exc_m else "")
+            )
+            if vendor == "house_insurance" and accepted_pdf is None:
+                accepted_pdf = (pdf_path, orig_name)
+
+        if accepted_pdf is None:
+            # No PDF matched house_insurance — clean up and skip-label
+            for pdf_path, _ in downloaded:
+                try:
+                    pdf_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            try:
+                service.users().messages().modify(
+                    userId="me", id=msg_id,
+                    body={"addLabelIds": [skipped_label_id],
+                          "removeLabelIds": ["INBOX", "UNREAD"]},
+                ).execute()
+            except Exception as exc:
+                log.warning("Failed to label ForwardedSkipped on %s: %s", msg_id, exc)
+            save_email_record(msg_id, sender, subject, received_at, None)
+            stats["skipped"] += 1
+            stats["notifications"].append(
+                f"⏭️ Skipped forwarded PDF(s) from {sender} — not home insurance.\n"
+                + "\n".join(f"  · {d}" for d in classify_details)
+            )
+            log.info("Forwarded msg %s rejected — labelled ForwardedSkipped", msg_id)
+            continue
+
+        # Accepted: run full parse on the accepted PDF, apply 'Home insurance' label
+        chosen_path, chosen_name = accepted_pdf
+        parsed = trigger_parse(str(chosen_path))
+        if parsed:
+            results.append(parsed)
+            try:
+                service.users().messages().modify(
+                    userId="me", id=msg_id,
+                    body={"addLabelIds": [ins_label_id],
+                          "removeLabelIds": ["INBOX", "UNREAD"]},
+                ).execute()
+            except Exception as exc:
+                log.warning("Failed to apply Home insurance label to %s: %s", msg_id, exc)
+            apply_vendor_label(service, msg_id, parsed.get("vendor_category", ""))
+            stats["accepted"] += 1
+            amt = parsed.get("total_amount")
+            amt_str = f"€{amt:.2f}" if amt is not None else "amount TBD"
+            stats["notifications"].append(
+                f"✅ Forwarded home insurance from {sender}: {amt_str}"
+            )
+        else:
+            log.warning("Parse of accepted forwarded PDF %s failed", chosen_path)
+            stats["errors"] += 1
+            stats["notifications"].append(
+                f"⚠️ Forwarded home insurance from {sender} — parse failed, check logs."
+            )
+
+        # Clean up non-accepted extras (if email had multiple PDFs and only one matched)
+        for pdf_path, _ in downloaded:
+            if pdf_path != chosen_path:
+                try:
+                    pdf_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+        save_email_record(msg_id, sender, subject, received_at, str(chosen_path))
+
+    return results, stats
+
+
 def _poll_insurance_bills(service, bills_dir: Path, utility_label_id: str) -> list:
     """Download PDFs from 'Home insurance' label and trigger parsing."""
     insurance_label = os.environ.get("INSURANCE_GMAIL_LABEL", "Home insurance")
@@ -572,6 +828,23 @@ def _poll_insurance_bills(service, bills_dir: Path, utility_label_id: str) -> li
     return results
 
 
+def _send_telegram_text(msg: str) -> None:
+    """Send a plain text message to Telegram. Used for per-event forwarded-bill notifications."""
+    import httpx
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        return
+    try:
+        httpx.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": msg},
+            timeout=10.0,
+        )
+    except Exception as exc:
+        log.warning("Telegram text send failed: %s", exc)
+
+
 def _send_telegram_summary(new_bills: list, bills_dir: Path):
     """Send one batched Telegram summary + regenerated dashboard after poll."""
     import httpx
@@ -608,6 +881,7 @@ def _send_telegram_summary(new_bills: list, bills_dir: Path):
     parser_url = os.environ.get("PARSER_SERVICE_URL", "http://bill-parser:8001")
     api_key = os.environ.get("API_SECRET_KEY", "")
     dashboard_path = os.environ.get("DASHBOARD_PATH", "/data/dashboard.html")
+    msg_id_path = Path(dashboard_path).parent / "last_dashboard_msg_id.txt"
     try:
         httpx.post(
             f"{parser_url}/generate-dashboard",
@@ -615,13 +889,31 @@ def _send_telegram_summary(new_bills: list, bills_dir: Path):
             timeout=30.0,
         )
         if os.path.exists(dashboard_path):
+            # Delete previous dashboard message from Telegram
+            if msg_id_path.exists():
+                try:
+                    old_msg_id = msg_id_path.read_text().strip()
+                    httpx.post(
+                        f"https://api.telegram.org/bot{token}/deleteMessage",
+                        json={"chat_id": chat_id, "message_id": int(old_msg_id)},
+                        timeout=10.0,
+                    )
+                    log.info("Deleted previous dashboard message %s", old_msg_id)
+                except Exception as del_exc:
+                    log.warning("Could not delete old dashboard message: %s", del_exc)
+
+            # Send new dashboard
             with open(dashboard_path, "rb") as f:
-                httpx.post(
+                resp = httpx.post(
                     f"https://api.telegram.org/bot{token}/sendDocument",
                     data={"chat_id": chat_id, "caption": "\U0001f4ca Dashboard"},
-                    files={"document": ("dashboard.html", f, "text/html")},
+                    files={"document": ("Utility_Bills_Dashboard.html", f, "text/html")},
                     timeout=30.0,
                 )
+            # Save message_id for next deletion
+            resp_data = resp.json()
+            if resp_data.get("ok") and resp_data.get("result", {}).get("message_id"):
+                msg_id_path.write_text(str(resp_data["result"]["message_id"]))
             log.info("Dashboard sent to Telegram")
     except Exception as exc:
         log.warning("Dashboard send failed: %s", exc)
@@ -641,6 +933,7 @@ def main():
     poll_gmail()  # Run immediately on start
     while True:
         schedule.run_pending()
+        Path("/tmp/healthcheck").write_text(str(time.time()))
         time.sleep(30)
 
 

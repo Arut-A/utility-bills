@@ -95,6 +95,12 @@ def get_no_pdf_vendors() -> dict:
             if v.get("special", {}).get("no_pdf_variant")}
 
 
+def get_vendor_gmail_label(vendor_slug: str) -> str | None:
+    """Return the Gmail label name for a given vendor_category, or None."""
+    vc = get_vendors().get(vendor_slug, {})
+    return vc.get("gmail", {}).get("gmail_label")
+
+
 # ── Classification ───────────────────────────────────────────────────────────
 
 def classify_vendor(pdf_path: str, text: str) -> str:
@@ -280,6 +286,62 @@ def extract_consumption(vendor_slug: str, text: str) -> dict:
                 break
 
     return result
+
+
+# ── Tariff signature ─────────────────────────────────────────────────────────
+
+def extract_tariff_signature(vendor_slug: str, text: str) -> Optional[dict]:
+    """Extract the contract/tariff identity from a consumption invoice.
+
+    Returns ``{"tariff_type": str|None, "unit_rates": [float, ...]}`` or None
+    when the vendor has no tariff_signature config or nothing matched.
+
+    This is what lets the anomaly checker tell a *tariff change* (supplier
+    re-priced or the contract type switched — expected) apart from a *real*
+    over-bill (rate unchanged but cost moved → fees/meter/error).
+
+    - ``tariff_type``: first matching product token (e.g. spot/fixed), so a
+      fixed→spot switch is detectable. type_patterns are matched case-sensitively
+      against the printed product line, never the "elektribörsi" boilerplate.
+    - ``unit_rates``: every printed €/unit at or above ``rate_min`` (drops tiny
+      grid/balancing micro-rates), so a re-price shows as a rate move.
+    """
+    vc = get_vendors().get(vendor_slug, {})
+    ts = vc.get("parsing", {}).get("tariff_signature")
+    if not ts:
+        return None
+
+    tariff_type = None
+    for tp in ts.get("type_patterns", []):
+        pat = tp.get("pattern")
+        if pat and re.search(pat, text):  # case-sensitive: avoid 'elektribörsi'
+            tariff_type = tp.get("type")
+            break
+
+    rates: list[float] = []
+    rate_min = float(ts.get("rate_min", 0.0))
+    # rate_patterns: list of {pattern, scale}. Handles both the current
+    # "0,07849 €/kWh" notation (scale 1) and the older "9.632 s/kWh" cents
+    # notation (scale 0.01). A legacy single rate_pattern string is also honored.
+    patterns = ts.get("rate_patterns")
+    if not patterns and ts.get("rate_pattern"):
+        patterns = [{"pattern": ts["rate_pattern"], "scale": 1.0}]
+    for spec in (patterns or []):
+        pat = spec.get("pattern")
+        if not pat:
+            continue
+        scale = float(spec.get("scale", 1.0))
+        for m in re.findall(pat, text):
+            try:
+                val = _parse_num(m) * scale
+            except (ValueError, AttributeError):
+                continue
+            if val >= rate_min:
+                rates.append(round(val, 5))
+
+    if tariff_type is None and not rates:
+        return None
+    return {"tariff_type": tariff_type, "unit_rates": rates}
 
 
 # ── Skip rules ───────────────────────────────────────────────────────────────

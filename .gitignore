@@ -6,6 +6,7 @@ raw/
 
 # Generated dashboard
 dashboard.html
+.telegram_dashboard_msg_id
 
 # Sensitive vendor config
 config/vendors/security.yaml
@@ -23,3 +24,11 @@ __pycache__/
 # Backup files
 *.bak
 *.bak-*
+backups/
+
+# Test artifacts
+.pytest_cache/
+
+# check_telia was removed from tracking
+check_telia.py
+Archive/

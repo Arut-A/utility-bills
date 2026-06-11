@@ -1,17 +1,18 @@
 """
 api-server/main.py
 FastAPI REST API consumed by the Android app.
-Secured with API key header.
+Secured with Google Sign-In session JWT (app) or X-API-Key (internal).
 """
 
 import logging
 import os
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Security
-from fastapi.responses import FileResponse
-from fastapi.security.api_key import APIKeyHeader
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy import create_engine, text
+
+from auth import require_auth, router as auth_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,15 +20,12 @@ logging.basicConfig(
 )
 log = logging.getLogger("api-server")
 
-app = FastAPI(title="Utility Bills API", version="1.0.0")
+app = FastAPI(title="Utility Bills API", version="1.1.0")
 
 # ── Auth ───────────────────────────────────────────────────────────────────────
-API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=True)
-
-def require_api_key(key: str = Security(API_KEY_HEADER)):
-    if key != os.environ.get("API_SECRET_KEY", ""):
-        raise HTTPException(status_code=403, detail="Invalid API key")
-    return key
+# Google Sign-In -> session JWT for the Android app; X-API-Key still accepted
+# for internal callers. See auth.py.
+app.include_router(auth_router)
 
 # ── DB ─────────────────────────────────────────────────────────────────────────
 _engine = None
@@ -54,18 +52,69 @@ def rows_to_dicts(result):
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
+# Dashboard auth — simple token in URL or cookie
+DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN", "")
+
+
+def _check_dashboard_auth(request: Request):
+    """Check dashboard access via URL token or cookie."""
+    if not DASHBOARD_TOKEN:
+        return  # No token configured — open access (backward compatible)
+    # Check URL param
+    if request.query_params.get("token") == DASHBOARD_TOKEN:
+        return
+    # Check cookie
+    if request.cookies.get("dashboard_token") == DASHBOARD_TOKEN:
+        return
+    raise HTTPException(status_code=401, detail="Unauthorized — add ?token=YOUR_TOKEN to the URL")
+
+
 @app.get("/")
-async def dashboard():
-    """Serve the dashboard HTML."""
+async def dashboard(request: Request):
+    """Serve the dashboard HTML. Protected by token if DASHBOARD_TOKEN is set.
+
+    Once auth passes, inject the token into the HTML so PDF links always carry it.
+    The HTML is already token-gated — embedding the token in-page adds no new exposure.
+    """
+    _check_dashboard_auth(request)
     path = os.environ.get("DASHBOARD_PATH", "/data/dashboard.html")
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Dashboard not found")
-    return FileResponse(path, media_type="text/html")
+
+    with open(path, "r", encoding="utf-8") as f:
+        html = f.read()
+
+    if DASHBOARD_TOKEN:
+        # 1) Inject token for any JS that reads it
+        inject = f'<script>window.__DT={DASHBOARD_TOKEN!r};</script>'
+        if "</head>" in html:
+            html = html.replace("</head>", inject + "</head>", 1)
+        else:
+            html = inject + html
+        # 2) Hardcode token directly into the PDF-link expression so it's
+        #    immune to any cache / script-order / sandboxing quirks.
+        html = html.replace(
+            "(window.__DT)||new URLSearchParams(location.search).get('token')||''",
+            f"'{DASHBOARD_TOKEN}'",
+        )
+
+    response = HTMLResponse(content=html)
+    # Defeat aggressive browser caching (Chrome was serving pre-fix HTML even after hard-refresh)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    if DASHBOARD_TOKEN:
+        response.set_cookie(
+            "dashboard_token", DASHBOARD_TOKEN,
+            max_age=86400 * 30, httponly=True, samesite="lax", path="/",
+        )
+    return response
+
 
 
 @app.get("/bills/{filename}")
-async def serve_bill_pdf(filename: str):
-    """Serve a PDF bill file."""
+async def serve_bill_pdf(filename: str, request: Request):
+    """Serve a PDF bill file. Open access — token-gating removed per owner request 2026-05-04."""
     bills_dir = os.environ.get("BILLS_RAW_DIR", "/data/raw")
     # Sanitize: only allow filenames, no path traversal
     if "/" in filename or "\\" in filename or ".." in filename:
@@ -81,7 +130,7 @@ async def health():
     return {"status": "ok"}
 
 
-@app.get("/api/bills", dependencies=[Depends(require_api_key)])
+@app.get("/api/bills", dependencies=[Depends(require_auth)])
 async def list_bills(
     vendor: Optional[str] = Query(None),
     date_from: Optional[str] = Query(None),   # YYYY-MM-DD
@@ -107,7 +156,8 @@ async def list_bills(
         SELECT id, vendor_category, invoice_number, invoice_date, due_date,
                billing_period_start, billing_period_end,
                total_amount, currency, energy_kwh, gas_m3, water_m3,
-               internet_gb, phone_minutes, other_units, unit_type, per_unit_cost
+               internet_gb, phone_minutes, other_units, unit_type, per_unit_cost,
+               raw_pdf_path
         FROM parsed_bills
         WHERE {where}
         ORDER BY invoice_date DESC
@@ -115,10 +165,18 @@ async def list_bills(
     """
     with get_engine().connect() as conn:
         result = conn.execute(text(sql), params)
-        return rows_to_dicts(result)
+        rows = rows_to_dicts(result)
+    # Attribute each bill to its cost-month (shared with the dashboard), so the
+    # app's Bills list groups a June-issued May-service transport bill under May.
+    from shared.aggregate import cost_month_for
+    for r in rows:
+        r["cost_month"] = cost_month_for(
+            r["vendor_category"], r["invoice_date"],
+            r.get("billing_period_start"), r.get("billing_period_end"))
+    return rows
 
 
-@app.get("/api/bills/monthly-totals", dependencies=[Depends(require_api_key)])
+@app.get("/api/bills/monthly-totals", dependencies=[Depends(require_auth)])
 async def monthly_totals(
     vendor: Optional[str] = Query(None),
     year: Optional[int] = Query(None),
@@ -139,7 +197,7 @@ async def monthly_totals(
         return rows_to_dicts(result)
 
 
-@app.get("/api/bills/trends", dependencies=[Depends(require_api_key)])
+@app.get("/api/bills/trends", dependencies=[Depends(require_auth)])
 async def trends(vendor: Optional[str] = Query(None)):
     """YoY cost comparison per vendor/month."""
     params = {}
@@ -153,7 +211,7 @@ async def trends(vendor: Optional[str] = Query(None)):
         return rows_to_dicts(result)
 
 
-@app.get("/api/bills/per-unit-costs", dependencies=[Depends(require_api_key)])
+@app.get("/api/bills/per-unit-costs", dependencies=[Depends(require_auth)])
 async def per_unit_costs(vendor: Optional[str] = Query(None)):
     """Average per-unit cost over time, grouped by vendor and month."""
     params = {}
@@ -182,7 +240,7 @@ async def per_unit_costs(vendor: Optional[str] = Query(None)):
         return rows_to_dicts(result)
 
 
-@app.get("/api/meter-readings", dependencies=[Depends(require_api_key)])
+@app.get("/api/meter-readings", dependencies=[Depends(require_auth)])
 async def list_meter_readings(
     meter_id: Optional[str] = Query(None),
     vendor: Optional[str] = Query(None),
@@ -203,7 +261,7 @@ async def list_meter_readings(
         return rows_to_dicts(result)
 
 
-@app.post("/api/meter-readings", dependencies=[Depends(require_api_key)])
+@app.post("/api/meter-readings", dependencies=[Depends(require_auth)])
 async def add_meter_reading(body: dict):
     """Manually add a meter reading (from Android app)."""
     required = {"meter_id", "vendor_category", "reading_date", "reading_value", "unit_type"}
@@ -221,7 +279,7 @@ async def add_meter_reading(body: dict):
     return {"status": "created"}
 
 
-@app.post("/api/bills/manual", dependencies=[Depends(require_api_key)])
+@app.post("/api/bills/manual", dependencies=[Depends(require_auth)])
 async def add_manual_bill(body: dict):
     """Manually enter a bill from the Android app."""
     import uuid
@@ -276,3 +334,11 @@ async def add_manual_bill(body: dict):
             record,
         )
     return {"status": "created", "id": record["id"]}
+
+
+# ── Summary + Series (Android app) ─────────────────────────────────────────────
+from summary import router as summary_router  # noqa: E402  (needs get_engine defined)
+from series import router as series_router    # noqa: E402
+
+app.include_router(summary_router, dependencies=[Depends(require_auth)])
+app.include_router(series_router, dependencies=[Depends(require_auth)])

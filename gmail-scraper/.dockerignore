@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.*
+tests/
+backups/
+raw/
+credentials/
+*.bak
+.DS_Store
+@eaDir/

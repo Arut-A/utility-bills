@@ -1,0 +1,167 @@
+version: "3.9"
+
+networks:
+  bills-net:
+    driver: bridge
+
+services:
+
+  mariadb:
+    image: mariadb:10.11
+    container_name: bills_mariadb
+    restart: always
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - bills-net
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=${MARIADB_DB}
+      - MYSQL_USER=${MARIADB_USER}
+      - MYSQL_PASSWORD=${MARIADB_PASSWORD}
+    volumes:
+      - /volume1/docker/mariadb_data:/var/lib/mysql
+      - ./schema/views.sql:/docker-entrypoint-initdb.d/01-views.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "${MARIADB_USER}", "-p${MARIADB_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    mem_limit: 512m
+    memswap_limit: 1g
+
+  # db-backup service removed 2026-06-10 — daily DB dump runs via host cron
+  # /etc/cron.d/bills-backup (bills-backup.sh) since it replaced this container.
+  # The service block sat here unused; a bare `up -d` would have resurrected a
+  # duplicate backup container. Recover from git history if ever needed.
+
+  api-server:
+    build:
+      context: .
+      dockerfile: api-server/Dockerfile
+    image: bills-api:latest
+    container_name: bills_api
+    restart: always
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - bills-net
+    volumes:
+      - /volume1/Projects/bills:/data
+    environment:
+      - DB_HOST=${MARIADB_HOST}
+      - DB_PORT=${MARIADB_PORT:-3306}
+      - DB_NAME=${MARIADB_DB}
+      - DB_USER=${MARIADB_USER}
+      - DB_PASSWORD=${MARIADB_PASSWORD}
+      - API_SECRET_KEY=${API_SECRET_KEY}
+      - DASHBOARD_TOKEN=${DASHBOARD_TOKEN:-}
+      - DASHBOARD_PATH=/data/dashboard.html
+      - BILLS_RAW_DIR=/data/raw
+      - SESSION_SECRET=${SESSION_SECRET:-}
+      - GOOGLE_WEB_CLIENT_ID=${GOOGLE_WEB_CLIENT_ID:-}
+      - ALLOWED_EMAILS=${ALLOWED_EMAILS:-}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+    ports:
+      - "8888:8000"
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    mem_limit: 256m
+    memswap_limit: 768m
+
+  bill-parser:
+    build:
+      context: .
+      dockerfile: bill-parser/Dockerfile
+    image: bills-parser:latest
+    container_name: bills_parser
+    restart: always
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - bills-net
+    volumes:
+      - /volume1/Projects/bills:/data
+    environment:
+      - DB_HOST=${MARIADB_HOST}
+      - DB_PORT=${MARIADB_PORT:-3306}
+      - DB_NAME=${MARIADB_DB}
+      - DB_USER=${MARIADB_USER}
+      - DB_PASSWORD=${MARIADB_PASSWORD}
+      - VENDOR_CONFIG_DIR=/data/config/vendors
+      - BILLS_RAW_DIR=/data/raw
+      - DASHBOARD_PATH=/data/dashboard.html
+      - DASHBOARD_BASE_URL=${DASHBOARD_BASE_URL:-}
+      - API_SECRET_KEY=${API_SECRET_KEY}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    mem_limit: 256m
+    memswap_limit: 768m
+
+  gmail-scraper:
+    build:
+      context: ./gmail-scraper
+    image: bills-scraper:latest
+    container_name: bills_gmail_scraper
+    restart: always
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - bills-net
+    volumes:
+      - /volume1/Projects/bills:/data
+    environment:
+      - DB_HOST=${MARIADB_HOST}
+      - DB_PORT=${MARIADB_PORT:-3306}
+      - DB_NAME=${MARIADB_DB}
+      - DB_USER=${MARIADB_USER}
+      - DB_PASSWORD=${MARIADB_PASSWORD}
+      - GMAIL_CREDENTIALS_PATH=/data/credentials/gmail_credentials.json
+      - GMAIL_TOKEN_PATH=/data/credentials/gmail_token.json
+      - BILLS_RAW_DIR=/data/raw
+      - DASHBOARD_PATH=/data/dashboard.html
+      - POLL_DAILY_TIME=${POLL_DAILY_TIME:-09:00}
+      - PARSER_SERVICE_URL=http://bill-parser:8001
+      - API_SECRET_KEY=${API_SECRET_KEY}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - BILLS_FORWARD_SENDER=${BILLS_FORWARD_SENDER:-}
+    depends_on:
+      bill-parser:
+        condition: service_healthy
+      mariadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/bin/sh", "/app/healthcheck.sh"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: 256m
+    memswap_limit: 768m

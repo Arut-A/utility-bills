@@ -107,6 +107,19 @@ def parse_pdf(pdf_path: str) -> dict:
     # Consumption + billing period from config
     consumption = vendor_config.extract_consumption(vendor_category, text)
 
+    # Tariff signature (contract type + printed €/unit rates) — lets the anomaly
+    # checker distinguish a tariff change from a real over-bill. Stored as JSON in
+    # `details`; per_unit_cost gets the mean printed energy rate for convenience.
+    details = None
+    per_unit_cost = None
+    sig = vendor_config.extract_tariff_signature(vendor_category, text)
+    if sig:
+        import json
+        details = json.dumps(sig, ensure_ascii=False)
+        rates = sig.get("unit_rates") or []
+        if rates:
+            per_unit_cost = round(sum(rates) / len(rates), 6)
+
     return {
         "id": str(uuid.uuid4()),
         "vendor_category": vendor_category,
@@ -121,6 +134,8 @@ def parse_pdf(pdf_path: str) -> dict:
         "water_m3": consumption.get("water_m3"),
         "other_units": consumption.get("other_units"),
         "unit_type": consumption.get("unit_type"),
+        "per_unit_cost": per_unit_cost,
+        "details": details,
         "raw_pdf_path": pdf_path,
         "processed_at": datetime.utcnow().isoformat(),
         "status": status,

@@ -134,6 +134,63 @@ async def parse_bill(req: ParseRequest, request: Request):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+class ClassifyResponse(BaseModel):
+    vendor_category: str
+    matched_require: str | None = None
+    matched_exclude: str | None = None
+    text_length: int
+
+
+@app.post("/classify", response_model=ClassifyResponse)
+async def classify_only(req: ParseRequest, request: Request):
+    """Classify a PDF without saving to DB. Returns vendor_category + diagnostic info.
+
+    Used by the gmail-scraper to pre-check forwarded emails before full parse.
+    """
+    _check_api_key(request)
+    _assert_safe_path(req.pdf_path)
+    import fitz
+    import vendor_config as vc
+
+    try:
+        doc = fitz.open(req.pdf_path)
+        text = "\n".join(page.get_text() for page in doc)
+        doc.close()
+    except Exception as exc:
+        log.warning("classify: text extract failed for %s: %s", req.pdf_path, exc)
+        return ClassifyResponse(vendor_category="unknown", text_length=0)
+
+    vendor_category = vc.classify_vendor(req.pdf_path, text)
+
+    matched_require = None
+    matched_exclude = None
+    content_lower = text[:3000].lower()
+    vendors = vc.get_vendors()
+    cls_cfg = vendors.get(vendor_category, {}).get("classification", {})
+    for kw in cls_cfg.get("require_keywords", []):
+        if kw.lower() in content_lower:
+            matched_require = kw
+            break
+    # Always report the first exclude keyword that matched ANY vendor — helps diagnose forwards
+    for v_slug, v_cfg in vendors.items():
+        for kw in v_cfg.get("classification", {}).get("exclude_keywords", []):
+            if kw.lower() in content_lower:
+                matched_exclude = f"{kw} (excluded from {v_slug})"
+                break
+        if matched_exclude:
+            break
+
+    log.info("classify: %s -> %s (require_match=%s, exclude_match=%s)",
+             req.pdf_path, vendor_category, matched_require, matched_exclude)
+
+    return ClassifyResponse(
+        vendor_category=vendor_category,
+        matched_require=matched_require,
+        matched_exclude=matched_exclude,
+        text_length=len(text),
+    )
+
+
 @app.post("/generate-dashboard")
 async def api_generate_dashboard(request: Request):
     """Regenerate dashboard from DB data. Called by gmail-scraper after poll."""

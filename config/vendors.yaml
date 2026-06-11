@@ -49,6 +49,19 @@ vendors:
       billing_period:
         patterns:
         - '[Aa]rveldusperiood\s*[:\s]*(\d{2}\.\d{2}\.\d{4})\s*[-–]\s*(\d{2}\.\d{2}\.\d{4})'
+      # Tariff signature: lets the anomaly checker tell a contract/tariff change
+      # (expected) apart from a real over-bill. type_patterns match the printed
+      # product line — NOT the boilerplate "elektribörsi vahendusel" (which
+      # appears on every Alexela invoice). Order matters: first match wins.
+      tariff_signature:
+        type_patterns:
+        - {pattern: 'Börsihinnaga', type: spot}
+        - {pattern: 'Fikseeritud hinnaga', type: fixed}
+        - {pattern: 'Universaalteenus', type: universal}
+        rate_patterns:
+        - {pattern: '([\d]+,[\d]+)\s*€/kWh', scale: 1.0}    # 2026+ : 0,07849 €/kWh
+        - {pattern: '([\d]+\.[\d]+)\s*s/kWh', scale: 0.01}  # pre-2026: 9.632 s/kWh (cents)
+        rate_min: 0.02   # drops the balancing-capacity micro-rate (~0.004 €/kWh)
   electricity_transport:
     display_name: Electricity Network
     provider: Imatra Elekter
@@ -120,6 +133,18 @@ vendors:
       billing_period:
         patterns:
         - '[Aa]rveldusperiood\s*[:\s]*(\d{2}\.\d{2}\.\d{4})\s*[-–]\s*(\d{2}\.\d{2}\.\d{4})'
+      # Gas has no fixed/spot split — the product line is just "Maagaas <month>"
+      # at a market €/m³ rate. The printed €/m³ rate IS the tariff signature: a
+      # change in it = a tariff move (expected); rate flat but c/m³ drifting = real.
+      tariff_signature:
+        type_patterns:
+        - {pattern: 'Börsihinnaga', type: spot}
+        - {pattern: 'Fikseeritud', type: fixed}
+        - {pattern: 'Maagaas', type: maagaas}
+        rate_patterns:
+        - {pattern: '([\d]+,[\d]+)\s*€/m[³3]', scale: 1.0}    # 0,435 €/m3
+        - {pattern: '([\d]+\.[\d]+)\s*s/m[³3]', scale: 0.01}  # older cents/m3 notation
+        rate_min: 0.05   # gas energy rate ~0.4 €/m³; drops any micro grid fee
   gas_transport:
     display_name: Gas Network
     provider: Adven
@@ -367,6 +392,22 @@ vendors:
       - prokm
       - prokindlustus
       - poliis
+      # Gate A — at least one must appear in PDF text
+      # (prevents car insurance from same provider being misclassified)
+      require_keywords:
+      - Kodukindlustus      # decisive — single Estonian word for home insurance
+      - elamu               # dwelling / house
+      - Your street         # your property address (decisive for home-insurance bills)
+      # None may appear in PDF text — indicates car / motor / vehicle insurance
+      # Update car brand here if household vehicles change.
+      exclude_keywords:
+      - YourCarBrand        # your car brand — excludes motor-insurance bills
+      - Liikluskindlustus   # mandatory motor insurance (Estonia)
+      - Kaskokindlustus     # comprehensive car insurance
+      - Kasko
+      - Sõidukikindlustus   # vehicle insurance variant
+      - sõiduk              # vehicle
+      - registreerimismärk  # license plate / vehicle reg mark
     parsing:
       total_patterns:
       - KOKKU TASUDA\s*\n?\s*([\d]+[.,][\d]{2})
